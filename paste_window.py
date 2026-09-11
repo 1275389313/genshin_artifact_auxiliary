@@ -34,14 +34,33 @@ class PasteWindow(QWidget):
         # 快捷键Ctrl+Z关闭贴图窗口，需焦点在主窗口
         self.shortcut = QShortcut(QKeySequence('Ctrl+Z'), self)
         self.shortcut.activated.connect(self.close)
-    
-    # 按键关闭/重置对应贴图窗口
-    # def keyPressEvent(self, event):
-    #     if event.key() == Qt.Key_Z:
-    #         print('freshed')
-    #         self.hide()
-    
-    # Ctrl+Z关闭窗口
+
     def close(self):
-        # print('canceled!')
+        self.hide()
+
+
+class TotalPasteWindow(QWidget):
+    '''角色页合计贴图，比单件评分框更宽。'''
+
+    def __init__(self):
+        super().__init__()
+        self.setAttribute(Qt.WA_TranslucentBackground)
+        self.setWindowFlags(Qt.FramelessWindowHint | Qt.WindowStaysOnTopHint | Qt.Tool)
+
+        layout = QVBoxLayout()
+        layout.setContentsMargins(0, 0, 0, 0)
+        self.label = QLabel('有效词条 0.0')
+        font = self.label.font()
+        font.setPointSize(max(8, int(10 * scale)))
+        self.label.setFont(font)
+        self.label.setFixedSize(int(180 * scale), int(28 * scale))
+        self.label.setAlignment(Qt.AlignCenter)
+        self.label.setStyleSheet('background-color: rgb(255, 255, 255)')
+        layout.addWidget(self.label)
+        self.setLayout(layout)
+
+        self.shortcut = QShortcut(QKeySequence('Ctrl+Z'), self)
+        self.shortcut.activated.connect(self.hide)
+
+    def close(self):
         self.hide()

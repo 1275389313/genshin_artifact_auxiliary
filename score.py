@@ -1,4 +1,4 @@
-'''计算圣遗物评分、词条数、词条强化次数'''
+'''旧版刻晴 30/40/50 加权评分（coefficient.json）。有效词条见 effective_rolls.py。'''
 
 import json
 from doc import coefficient_path  # 导入 coefficient_path
