@@ -3,15 +3,17 @@
 import requests, json
 from pynput import keyboard
 
-import doc, location, ocr, score, mona
+from pynput.mouse import Button as MouseButton, Controller as MouseController
+
+import doc, location, ocr, score, mona, effective_rolls
 from extention import OutsideMouseManager, ExtendedComboBox
-from paste_window import PasteWindow
+from paste_window import PasteWindow, TotalPasteWindow
 
 from PySide6.QtCore import Qt, QUrl, QTimer
 from PySide6.QtGui import QPixmap, QDesktopServices
 from PySide6.QtWidgets import (
     QLabel, QPushButton, QWidget, QGridLayout,
-    QRadioButton, QComboBox, QLineEdit
+    QRadioButton, QComboBox, QLineEdit, QApplication
 )
 from PySide6.QtCore import Signal
 
@@ -38,6 +40,13 @@ class MainPage(QWidget):
         # 角色选择框
         self.combobox = ExtendedComboBox()
 
+        # 角色页五件扫描
+        self.scanbtn = QPushButton('扫描五件 (F8)')
+        self.set_total = QLabel('有效词条 0.0（0/5）')
+        self.notice = QLabel('')
+        self.notice.setWordWrap(True)
+        self.notice.setStyleSheet('color: #a15c00')
+
         # 识别结果显示
         self.title = QLabel('请选择圣遗物，然后点击右键')
         self.name = []
@@ -57,8 +66,8 @@ class MainPage(QWidget):
 
         self.confirm = QPushButton('确认修改')
 
-        self.entries = QLabel('有效词条：0')
-        self.total = QLabel('总分')
+        self.entries = QLabel('有效词条：0.0')
+        self.total = QLabel('旧评分')
         self.score_total = QLabel('0')
 
         # 评分方案本地保存
@@ -81,20 +90,23 @@ class MainPage(QWidget):
         self.layout.addWidget(self.radiobtn2, 0, 1)
         self.layout.addWidget(self.settingbtn, 0, 2, 1, 2, Qt.AlignRight)
         self.layout.addWidget(self.combobox, 1, 0, 1, 4)
-        self.layout.addWidget(self.title, 2, 0, 1, 4)
+        self.layout.addWidget(self.scanbtn, 2, 0, 1, 2)
+        self.layout.addWidget(self.set_total, 2, 2, 1, 2, Qt.AlignRight)
+        self.layout.addWidget(self.notice, 3, 0, 1, 4)
+        self.layout.addWidget(self.title, 4, 0, 1, 4)
         for i in range(4):
-            self.layout.addWidget(self.name[i], i + 3, 0)
-            self.layout.addWidget(self.digit[i], i + 3, 1)
-            self.layout.addWidget(self.strengthen[i], i + 3, 2, Qt.AlignRight)
-            self.layout.addWidget(self.score[i], i + 3, 3, Qt.AlignRight)
-        self.layout.addWidget(self.confirm, 7, 0)
-        self.layout.addWidget(self.entries, 7, 1, Qt.AlignRight)
-        self.layout.addWidget(self.total, 7, 2, Qt.AlignRight)
-        self.layout.addWidget(self.score_total, 7, 3, Qt.AlignRight)
-        self.layout.addWidget(self.archive, 8, 0, 1, 3)
-        self.layout.addWidget(self.save, 8, 3)
-        self.layout.addWidget(self.upgrade, 9, 0, 1, 2, Qt.AlignLeft | Qt.AlignBottom)
-        self.layout.addWidget(self.github, 9, 3, Qt.AlignRight | Qt.AlignBottom)
+            self.layout.addWidget(self.name[i], i + 5, 0)
+            self.layout.addWidget(self.digit[i], i + 5, 1)
+            self.layout.addWidget(self.strengthen[i], i + 5, 2, Qt.AlignRight)
+            self.layout.addWidget(self.score[i], i + 5, 3, Qt.AlignRight)
+        self.layout.addWidget(self.confirm, 9, 0)
+        self.layout.addWidget(self.entries, 9, 1, Qt.AlignRight)
+        self.layout.addWidget(self.total, 9, 2, Qt.AlignRight)
+        self.layout.addWidget(self.score_total, 9, 3, Qt.AlignRight)
+        self.layout.addWidget(self.archive, 10, 0, 1, 3)
+        self.layout.addWidget(self.save, 10, 3)
+        self.layout.addWidget(self.upgrade, 11, 0, 1, 2, Qt.AlignLeft | Qt.AlignBottom)
+        self.layout.addWidget(self.github, 11, 3, Qt.AlignRight | Qt.AlignBottom)
 
         self.setLayout(self.layout)
 
@@ -105,22 +117,40 @@ class MainPage(QWidget):
         self.xarray, self.yarray = location.xarray_A, location.yarray_A
         self.x_grab, self.y_grab, self.w_grab, self.h_grab = location.x_grab_A, location.y_grab_A, location.w_grab_A, location.h_grab_A
         self.SCALE = location.SCALE
+        self.slot_click = location.slot_click_B
+        self.slot_overlay = location.slot_overlay_B
+        self.total_overlay = location.total_overlay_B
 
         # 贴图窗口组
         self.pastes = []
         self.id = -1
         self.artifact = {}
         self.score_result = [[0, 0, 0, 0], 0]
+        self.roll_result = [[0, 0, 0, 0], 0.0]
+        self.equipped_artifact = [None] * 5
+        self.equipped_rolls = [None] * 5
+        self._scanning = False
+        self._scan_index = 0
+        self._scan_hotkeys = None
+        self._mouse = MouseController()
+        self.app_settings = doc.load_settings()
 
         for i in range(self.row * self.col):
             window = PasteWindow()
             self.pastes.append(window)
             self.pastes[i].move(self.position[i][0] / self.SCALE, self.position[i][1] / self.SCALE)
 
-        # 默认角色及配置
-        self.character = '默认攻击双爆'
-        self.config = {'生命值': 0, '攻击力': 0.75, '防御力': 0, '暴击率': 1, '暴击伤害': 1, '元素精通': 0,
-                       '元素充能效率': 0}
+        self.slot_pastes = []
+        for i in range(5):
+            window = PasteWindow()
+            self.slot_pastes.append(window)
+            self.slot_pastes[i].move(self.slot_overlay[i][0] / self.SCALE, self.slot_overlay[i][1] / self.SCALE)
+        self.total_paste = TotalPasteWindow()
+        self.total_paste.move(self.total_overlay[0] / self.SCALE, self.total_overlay[1] / self.SCALE)
+
+        # 默认角色及配置（未选角色 = 常规主C-攻暴）
+        self.character = effective_rolls.FALLBACK_NAME
+        self.config = dict(effective_rolls.FALLBACK_CONFIG)
 
         # 加载角色列表
         with open(doc.character_path, 'r', encoding='utf-8') as f:
@@ -169,6 +199,8 @@ class MainPage(QWidget):
         self.github.setCursor(Qt.PointingHandCursor)
         self.github.mousePressEvent = self.open_github
 
+        self.scanbtn.clicked.connect(self.start_five_slot_scan)
+
         # 鼠标事件管理器
         self.manager = OutsideMouseManager()
         self.manager.right_click.connect(self.open_new_window)
@@ -176,6 +208,8 @@ class MainPage(QWidget):
 
         # 快捷键
         self.hotkey()
+        self.bind_scan_hotkey()
+        self.apply_old_score_visibility()
         # 数据插入模式
         self.insert = False
         self.insert_mode()
@@ -195,6 +229,7 @@ class MainPage(QWidget):
                 self.row, self.col = location.row_A, location.col_A
                 self.xarray, self.yarray = location.xarray_A, location.yarray_A
                 self.x_grab, self.y_grab, self.w_grab, self.h_grab = location.x_grab_A, location.y_grab_A, location.w_grab_A, location.h_grab_A
+                self.hide_slot_overlays()
                 self.reset()
 
         if btn.text() == '角色':
@@ -219,19 +254,20 @@ class MainPage(QWidget):
     # 选择框选择角色事件
     def current_index_changed(self, index):
         self.character = self.combobox.currentText()
-        try:
-            self.config = self.characters[self.character]
-            if self.config == {}:
-                self.config = {'生命值': 0, '攻击力': 0.75, '防御力': 0, '暴击率': 1, '暴击伤害': 1, '元素精通': 0,
-                               '元素充能效率': 0}
-        except:
-            self.config = {'生命值': 0, '攻击力': 0.75, '防御力': 0, '暴击率': 1, '暴击伤害': 1, '元素精通': 0,
-                           '元素充能效率': 0}
-        # 更新评分贴图
+        self.config, notice = effective_rolls.resolve_character_config(self.character, self.characters)
+        self.notice.setText(notice or '')
+        # 更新评分贴图（格子 + 五件页签）
         for i in range(len(self.pastes)):
             if self.pastes[i].isVisible() == True:
+                self.roll_result = effective_rolls.cal_effective_rolls(self.artifact[str(i)][1], self.config)
                 self.score_result = score.cal_score(self.artifact[str(i)][1], self.config)
-                self.pastes[i].label.setText(str(self.score_result[1]))
+                self.pastes[i].label.setText('{:.1f}'.format(self.roll_result[1]))
+        for i in range(5):
+            if self.equipped_artifact[i] is not None:
+                rolls = effective_rolls.cal_effective_rolls(self.equipped_artifact[i][1], self.config)
+                self.equipped_rolls[i] = rolls[1]
+                self.slot_pastes[i].label.setText('{:.1f}'.format(rolls[1]))
+        self.refresh_set_total()
 
         # 更新主程序评分详情
         if self.artifact != {}:
@@ -239,6 +275,8 @@ class MainPage(QWidget):
 
     # 修改识别结果按钮
     def confirm_clicked(self):
+        if str(self.id) not in self.artifact:
+            return
         self.artifact[str(self.id)][1] = {}
         for i in range(4):
             try:
@@ -304,6 +342,8 @@ class MainPage(QWidget):
 
     # 启动贴图弹窗
     def open_new_window(self, x, y):
+        if self._scanning:
+            return
         # 根据鼠标事件定位贴图
         for i in range(self.col):
             if x >= self.xarray[i][0] and x <= self.xarray[i][1]:
@@ -318,6 +358,8 @@ class MainPage(QWidget):
                         if self.delete:
                             self.delete_data()
                             break
+                        if self._scanning:
+                            break
                         # ocr识别与结果返回并刷新主面板、贴图
                         self.id = j * self.col + i
                         self.artifact[str(self.id)] = list(ocr.rapid_ocr(self.x_grab, self.y_grab, self.w_grab, self.h_grab))
@@ -328,6 +370,8 @@ class MainPage(QWidget):
 
     # 根据鼠标左键选择的圣遗物刷新主窗口圣遗物副属性和评分
     def left_click_artifact(self, x, y):
+        if self._scanning:
+            return
         for i in range(self.col):
             if x >= self.xarray[i][0] and x <= self.xarray[i][1]:
                 for j in range(self.row):
@@ -341,36 +385,35 @@ class MainPage(QWidget):
 
     # 刷新主程序（识别、选择、切换角色、修改后确认、加载本地数据）
     def fresh_main_window(self):
-        # 刷新圣遗物基本信息
-        self.title.setText('-'.join(self.artifact[str(self.id)][0]))
+        self._apply_piece_to_form(self.artifact[str(self.id)])
 
-        # 计算评分（计算很快就不另外储存了）
-        self.score_result = score.cal_score(self.artifact[str(self.id)][1], self.config)
-
-        # 主窗口更新详细评分
+    def _apply_piece_to_form(self, piece):
+        self.title.setText('-'.join(piece[0]))
+        self.roll_result = effective_rolls.cal_effective_rolls(piece[1], self.config)
+        self.score_result = score.cal_score(piece[1], self.config)
+        self.entries.setText('有效词条：' + '{:.1f}'.format(self.roll_result[1]))
         self.score_total.setText(str(self.score_result[1]))
-        self.entries.setText('有效词条：' + str(self.score_result[3]))
         for i in range(4):
-            if i < len(self.artifact[str(self.id)][1]):
-                if list(self.artifact[str(self.id)][1].keys())[i] in score.coefficient.keys():
-                    self.name[i].setCurrentText(list(self.artifact[str(self.id)][1].keys())[i])
-                    self.digit[i].setText(str(list(self.artifact[str(self.id)][1].values())[i]))
-                    self.score[i].setText(str(self.score_result[0][i]))
+            if i < len(piece[1]):
+                if list(piece[1].keys())[i] in score.coefficient.keys():
+                    self.name[i].setCurrentText(list(piece[1].keys())[i])
+                    self.digit[i].setText(str(list(piece[1].values())[i]))
+                    self.score[i].setText('{:.1f}'.format(self.roll_result[0][i] if i < len(self.roll_result[0]) else 0.0))
                     self.strengthen[i].setText("+" + str(self.score_result[2][i]))
                 else:
                     self.name[i].setCurrentText('识别错误')
-                    self.digit[i].setText(list(self.artifact[str(self.id)][1].keys())[i])
-                    self.score[i].setText('0')
+                    self.digit[i].setText(list(piece[1].keys())[i])
+                    self.score[i].setText('0.0')
                     self.strengthen[i].setText("+0")
             else:
                 self.name[i].setCurrentText('识别错误')
                 self.digit[i].setText('0')
-                self.score[i].setText('0')
+                self.score[i].setText('0.0')
                 self.strengthen[i].setText("+0")
 
     # 刷新圣遗物贴图（识别、修改后确认、加载本地数据，后于主面板更新）
     def fresh_paste_window(self):
-        self.pastes[self.id].label.setText(str(self.score_result[1]))
+        self.pastes[self.id].label.setText('{:.1f}'.format(self.roll_result[1]))
         self.pastes[self.id].show()
 
     # 推荐圣遗物，贴图底色突出
@@ -391,7 +434,10 @@ class MainPage(QWidget):
             self.score[i].setText('0')
             self.strengthen[i].setText("+0")
         self.score_total.setText('0')
-        self.entries.setText('有效词条：0')
+        self.entries.setText('有效词条：0.0')
+        self.equipped_artifact = [None] * 5
+        self.equipped_rolls = [None] * 5
+        self.refresh_set_total()
 
         # 数据重置
         self.pastes = []
@@ -400,11 +446,15 @@ class MainPage(QWidget):
             window = PasteWindow()
             self.pastes.append(window)
             self.pastes[i].move(self.position[i][0] / self.SCALE, self.position[i][1] / self.SCALE)
+        self.hide_slot_overlays()
 
     # 主窗口关闭则所有贴图窗口也关闭
     def closeEvent(self, event):
         for item in self.pastes:
             item.close()
+        for item in self.slot_pastes:
+            item.close()
+        self.total_paste.close()
 
     # 全局快捷键Ctrl+Shift+Z重置贴图窗口
     def hotkey(self):
@@ -420,9 +470,13 @@ class MainPage(QWidget):
                 self.score[i].setText('0')
                 self.strengthen[i].setText("+0")
             self.score_total.setText('0')
-            self.entries.setText('有效词条：0')
+            self.entries.setText('有效词条：0.0')
+            self.equipped_artifact = [None] * 5
+            self.equipped_rolls = [None] * 5
             for item in self.pastes:
                 item.hide()
+            self.hide_slot_overlays()
+            self.refresh_set_total()
 
         h = keyboard.GlobalHotKeys({'<ctrl>+<shift>+z': on_activate})
         h.start()
@@ -459,6 +513,7 @@ class MainPage(QWidget):
             if eval(key) > self.id:
                 self.id = eval(key)
                 self.score_result = score.cal_score(self.artifact[str(self.id)][1], self.config)
+                self.roll_result = effective_rolls.cal_effective_rolls(self.artifact[str(self.id)][1], self.config)
                 self.fresh_paste_window()
 
     # 左Ctrl键删除数据模式，清空目标位置的数据，之后的圣遗物前移一位，一般用于尾部
@@ -494,4 +549,153 @@ class MainPage(QWidget):
             if eval(key) >= self.id:
                 self.id = eval(key)
                 self.score_result = score.cal_score(self.artifact[str(self.id)][1], self.config)
+                self.roll_result = effective_rolls.cal_effective_rolls(self.artifact[str(self.id)][1], self.config)
                 self.fresh_paste_window()
+
+    def apply_settings(self, settings=None):
+        self.app_settings = settings or doc.load_settings()
+        self.bind_scan_hotkey()
+        self.apply_old_score_visibility()
+        if self.id != -1 and str(self.id) in self.artifact:
+            self.fresh_main_window()
+        for i in range(len(self.pastes)):
+            if self.pastes[i].isVisible() and str(i) in self.artifact:
+                rolls = effective_rolls.cal_effective_rolls(self.artifact[str(i)][1], self.config)
+                self.pastes[i].label.setText('{:.1f}'.format(rolls[1]))
+        for i in range(5):
+            if self.equipped_artifact[i] is not None:
+                rolls = effective_rolls.cal_effective_rolls(self.equipped_artifact[i][1], self.config)
+                self.equipped_rolls[i] = rolls[1]
+                self.slot_pastes[i].label.setText('{:.1f}'.format(rolls[1]))
+        self.refresh_set_total()
+
+    def apply_old_score_visibility(self):
+        show = bool(self.app_settings.get('show_old_score'))
+        self.total.setVisible(show)
+        self.score_total.setVisible(show)
+
+    def _hotkey_spec(self, name):
+        key = str(name or 'f8').strip().lower()
+        if not key:
+            key = 'f8'
+        if not key.startswith('<'):
+            key = '<' + key + '>'
+        return key
+
+    def bind_scan_hotkey(self):
+        if self._scan_hotkeys is not None:
+            try:
+                self._scan_hotkeys.stop()
+            except Exception:
+                pass
+            self._scan_hotkeys = None
+        spec = self._hotkey_spec(self.app_settings.get('scan_hotkey'))
+
+        def on_scan():
+            QTimer.singleShot(0, self.start_five_slot_scan)
+
+        try:
+            listener = keyboard.GlobalHotKeys({spec: on_scan})
+            listener.start()
+            self._scan_hotkeys = listener
+            self.scanbtn.setText('扫描五件 (' + spec.strip('<>').upper() + ')')
+        except Exception as exc:
+            print('bind scan hotkey failed', spec, exc)
+            if spec != '<f8>':
+                self.app_settings['scan_hotkey'] = 'f8'
+                self.bind_scan_hotkey()
+
+    def hide_slot_overlays(self):
+        for item in self.slot_pastes:
+            item.hide()
+        self.total_paste.hide()
+
+    def refresh_set_total(self):
+        total, counted = effective_rolls.sum_set_rolls(self.equipped_rolls)
+        text = effective_rolls.format_set_total(total, counted)
+        self.set_total.setText(text)
+        if counted > 0 and self.type == '角色':
+            self.total_paste.label.setText(text)
+            self.total_paste.move(self.total_overlay[0] / self.SCALE, self.total_overlay[1] / self.SCALE)
+            if not self._scanning:
+                self.total_paste.show()
+        else:
+            self.total_paste.hide()
+
+    def start_five_slot_scan(self):
+        if self._scanning:
+            return
+        if self.type != '角色':
+            self.upgrade.setText('请先切换到「角色」，并打开圣遗物装配页')
+            self.timer = QTimer()
+            self.timer.timeout.connect(self.reset_myappid)
+            self.timer.start(2000)
+            return
+        self._scanning = True
+        self._scan_index = 0
+        win = self.window()
+        if win is not None:
+            win.hide()
+        self.total_paste.hide()
+        for item in self.slot_pastes:
+            item.hide()
+        app = QApplication.instance()
+        if app is not None:
+            app.processEvents()
+        QTimer.singleShot(80, self._scan_click_current)
+
+    def _scan_click_current(self):
+        if not self._scanning:
+            return
+        if self._scan_index >= 5:
+            self._finish_scan()
+            return
+        self.slot_pastes[self._scan_index].hide()
+        app = QApplication.instance()
+        if app is not None:
+            app.processEvents()
+        x, y = self.slot_click[self._scan_index]
+        try:
+            self._mouse.position = (int(x), int(y))
+            self._mouse.click(MouseButton.left, 1)
+        except Exception as exc:
+            print('scan click failed', exc)
+            self._finish_scan()
+            return
+        delay = int(self.app_settings.get('scan_delay_ms') or 450)
+        QTimer.singleShot(delay, self._scan_ocr_current)
+
+    def _scan_ocr_current(self):
+        if not self._scanning:
+            return
+        i = self._scan_index
+        piece = list(ocr.rapid_ocr(self.x_grab, self.y_grab, self.w_grab, self.h_grab))
+        self.equipped_artifact[i] = piece
+        rolls = effective_rolls.cal_effective_rolls(piece[1], self.config)
+        self.equipped_rolls[i] = rolls[1]
+        self.slot_pastes[i].label.setText('{:.1f}'.format(rolls[1]))
+        self.slot_pastes[i].move(self.slot_overlay[i][0] / self.SCALE, self.slot_overlay[i][1] / self.SCALE)
+        self.slot_pastes[i].show()
+        self.refresh_set_total()
+        self._scan_index += 1
+        QTimer.singleShot(50, self._scan_click_current)
+
+    def _finish_scan(self):
+        self._scanning = False
+        self.id = -1
+        win = self.window()
+        if win is not None:
+            win.show()
+            win.raise_()
+        last = None
+        for piece in reversed(self.equipped_artifact):
+            if piece is not None:
+                last = piece
+                break
+        if last is not None:
+            self._apply_piece_to_form(last)
+        self.refresh_set_total()
+        self.upgrade.setText('五件扫描完成')
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.reset_myappid)
+        self.timer.start(2000)

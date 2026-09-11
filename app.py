@@ -28,6 +28,7 @@ class MainWindow(QMainWindow):
 
         self.main_page.open_settings.connect(self.show_settings)
         self.settings_page.go_back.connect(self.show_main)
+        self.settings_page.settings_saved.connect(self.main_page.apply_settings)
 
         central_widget = QWidget()
         central_widget.setLayout(self.stacked_layout)

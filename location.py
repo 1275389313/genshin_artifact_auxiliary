@@ -55,6 +55,22 @@ if ratio > 1.55 and ratio < 1.65:
     x_left_B, x_right_B, y_top_B, y_bottom_B = (48 / 2560 * w_width + w_left, 216 / 2560 * w_width + w_left, 167 / 1600 * w_hight + w_top, 371 / 1600 * w_hight + w_top)
     x_grab_B, y_grab_B, w_grab_B, h_grab_B = (1947 / 2560 * w_width + w_left, 149 / 1600 * w_hight + w_top, 551 / 2560 * w_width, 504 / 1600 * w_hight)
     row_B, col_B = (6, 4)
+    # 角色装配页顶部 花/羽/沙/杯/冠 页签：点击中心、贴图右下角、合计贴图
+    slot_click_B = [
+        (112 / 2560 * w_width + w_left, 58 / 1600 * w_hight + w_top),
+        (265 / 2560 * w_width + w_left, 58 / 1600 * w_hight + w_top),
+        (413 / 2560 * w_width + w_left, 58 / 1600 * w_hight + w_top),
+        (556 / 2560 * w_width + w_left, 58 / 1600 * w_hight + w_top),
+        (706 / 2560 * w_width + w_left, 58 / 1600 * w_hight + w_top),
+    ]
+    slot_overlay_B = [
+        (138 / 2560 * w_width + w_left, 82 / 1600 * w_hight + w_top),
+        (291 / 2560 * w_width + w_left, 82 / 1600 * w_hight + w_top),
+        (439 / 2560 * w_width + w_left, 82 / 1600 * w_hight + w_top),
+        (582 / 2560 * w_width + w_left, 82 / 1600 * w_hight + w_top),
+        (732 / 2560 * w_width + w_left, 82 / 1600 * w_hight + w_top),
+    ]
+    total_overlay_B = (200 / 2560 * w_width + w_left, 110 / 1600 * w_hight + w_top)
 
 # 16:9窗口模式
 elif ratio > 1.7 and ratio < 1.8:
@@ -67,6 +83,22 @@ elif ratio > 1.7 and ratio < 1.8:
     x_left_B, x_right_B, y_top_B, y_bottom_B = (37 / 1920 * w_width + w_left, 164 / 1920 * w_width + w_left, 125 / 1080 * w_hight + w_top, 278 / 1080 * w_hight + w_top)
     x_grab_B, y_grab_B, w_grab_B, h_grab_B = (1461 / 1920 * w_width + w_left, 111 / 1080 * w_hight + w_top, 413 / 1920 * w_width, 378 / 1080 * w_hight)
     row_B, col_B = (5, 4)
+    # 与 16:10 相同页签，按现有格子坐标的宽度比 1920/2560 缩放
+    slot_click_B = [
+        (84 / 1920 * w_width + w_left, 44 / 1080 * w_hight + w_top),
+        (199 / 1920 * w_width + w_left, 44 / 1080 * w_hight + w_top),
+        (310 / 1920 * w_width + w_left, 44 / 1080 * w_hight + w_top),
+        (417 / 1920 * w_width + w_left, 44 / 1080 * w_hight + w_top),
+        (530 / 1920 * w_width + w_left, 44 / 1080 * w_hight + w_top),
+    ]
+    slot_overlay_B = [
+        (104 / 1920 * w_width + w_left, 62 / 1080 * w_hight + w_top),
+        (218 / 1920 * w_width + w_left, 62 / 1080 * w_hight + w_top),
+        (329 / 1920 * w_width + w_left, 62 / 1080 * w_hight + w_top),
+        (437 / 1920 * w_width + w_left, 62 / 1080 * w_hight + w_top),
+        (549 / 1920 * w_width + w_left, 62 / 1080 * w_hight + w_top),
+    ]
+    total_overlay_B = (150 / 1920 * w_width + w_left, 82 / 1080 * w_hight + w_top)
 
 # 3:2窗口模式
 # elif ratio > 1.45 and ratio < 1.55:
@@ -91,6 +123,21 @@ else:
     x_left_B, x_right_B, y_top_B, y_bottom_B = (37 / 1920 * w_width + w_left, 164 / 1920 * w_width + w_left, 125 / 1080 * w_hight + w_top, 278 / 1080 * w_hight + w_top)
     x_grab_B, y_grab_B, w_grab_B, h_grab_B = (1461 / 1920 * w_width + w_left, 111 / 1080 * w_hight + w_top, 413 / 1920 * w_width, 378 / 1080 * w_hight)
     row_B, col_B = (5, 4)
+    slot_click_B = [
+        (84 / 1920 * w_width + w_left, 44 / 1080 * w_hight + w_top),
+        (199 / 1920 * w_width + w_left, 44 / 1080 * w_hight + w_top),
+        (310 / 1920 * w_width + w_left, 44 / 1080 * w_hight + w_top),
+        (417 / 1920 * w_width + w_left, 44 / 1080 * w_hight + w_top),
+        (530 / 1920 * w_width + w_left, 44 / 1080 * w_hight + w_top),
+    ]
+    slot_overlay_B = [
+        (104 / 1920 * w_width + w_left, 62 / 1080 * w_hight + w_top),
+        (218 / 1920 * w_width + w_left, 62 / 1080 * w_hight + w_top),
+        (329 / 1920 * w_width + w_left, 62 / 1080 * w_hight + w_top),
+        (437 / 1920 * w_width + w_left, 62 / 1080 * w_hight + w_top),
+        (549 / 1920 * w_width + w_left, 62 / 1080 * w_hight + w_top),
+    ]
+    total_overlay_B = (150 / 1920 * w_width + w_left, 82 / 1080 * w_hight + w_top)
 
 # 贴图坐标组
 position_A = []
