@@ -6,6 +6,7 @@ from pynput import keyboard
 from pynput.mouse import Button as MouseButton, Controller as MouseController
 
 import doc, location, ocr, score, effective_rolls, equipped
+from paths import resource_path
 from extention import ExtendedComboBox
 from paste_window import PasteWindow, TotalPasteWindow
 import paste_window
@@ -50,7 +51,7 @@ class MainPage(QWidget):
         self.upgrade = QLabel()
         self.github = QLabel()
         self.github.setFixedSize(20, 20)
-        pixmap = QPixmap('src/GitHub.png')
+        pixmap = QPixmap(resource_path('src', 'GitHub.png'))
         pixmap = pixmap.scaled(16, 16)
         self.github.setPixmap(pixmap)
 

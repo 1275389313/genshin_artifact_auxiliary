@@ -2,6 +2,8 @@
 
 import json, os, shutil
 
+from paths import resource_path
+
 folder = os.path.expanduser('~/Documents')
 folder = folder + '/keqing'
 character_path = folder + '/character.json'
@@ -71,39 +73,93 @@ def save_settings(data):
     with open(settings_path, 'w', encoding = 'utf-8') as fp:
         json.dump(merged, fp, ensure_ascii = False)
 
-# 数据文件夹存在则更新、补充相关配置文件
-if os.path.exists(folder):
-    # 角色配置不存在就复制一份，存在进行对比，有新角色添加则增量更新
-    if not os.path.exists(character_path):
-        shutil.copy('src/character.json', character_path)
-    else:
-        with open('src/character.json', 'r', encoding = 'utf-8') as fp:
-            default = json.load(fp)
-        with open(character_path, 'r', encoding = 'utf-8') as fp:
+def default_character_json():
+    '''Packed default character.json (src/, or _MEIPASS/src when frozen).'''
+    return resource_path('src', 'character.json')
+
+def load_bundled_character_defaults(path=None):
+    '''Read bundled default characters. Missing or unreadable → None, no throw.'''
+    src = path if path is not None else default_character_json()
+    if not os.path.isfile(src):
+        print(f'未找到默认角色配置 {src}，跳过从打包文件复制/合并。个人数据仍使用 {character_path}')
+        return None
+    try:
+        with open(src, 'r', encoding='utf-8') as fp:
+            data = json.load(fp)
+    except Exception as e:
+        print(f'读取默认角色配置失败（{src}）：{e}')
+        return None
+    if not isinstance(data, dict):
+        print(f'默认角色配置格式无效：{src}')
+        return None
+    return data
+
+def copy_default_character(dest, src=None):
+    '''Copy bundled character.json to user data. Fail soft if the default is missing.'''
+    default = load_bundled_character_defaults(src)
+    if default is None:
+        if not os.path.exists(dest):
+            try:
+                with open(dest, 'w', encoding='utf-8') as fp:
+                    json.dump({}, fp, ensure_ascii=False)
+            except Exception as e:
+                print(f'无法写入空的角色配置 {dest}：{e}')
+        return False
+    try:
+        shutil.copy(src if src is not None else default_character_json(), dest)
+        return True
+    except Exception as e:
+        print(f'复制默认角色配置失败：{e}')
+        if not os.path.exists(dest):
+            try:
+                with open(dest, 'w', encoding='utf-8') as fp:
+                    json.dump({}, fp, ensure_ascii=False)
+            except Exception as write_err:
+                print(f'无法写入空的角色配置 {dest}：{write_err}')
+        return False
+
+def merge_new_characters(user_path, src=None):
+    '''Add characters present only in the bundled default. Never overwrite user edits.'''
+    default = load_bundled_character_defaults(src)
+    if default is None:
+        return
+    try:
+        with open(user_path, 'r', encoding='utf-8') as fp:
             user = json.load(fp)
+        if not isinstance(user, dict):
+            print(f'用户角色配置格式无效，跳过合并：{user_path}')
+            return
         diff = default.keys() - user.keys()
-        if diff != set():
+        if diff:
             for item in diff:
                 user[item] = default[item]
-            with open(character_path, 'w', encoding = 'utf-8') as fp:
-                json.dump(user, fp, ensure_ascii = False)
-    
-    # 
-    if not os.path.exists(archive_path):
+            with open(user_path, 'w', encoding='utf-8') as fp:
+                json.dump(user, fp, ensure_ascii=False)
+    except Exception as e:
+        print(f'合并默认角色配置失败：{e}')
+
+def ensure_user_data():
+    '''Create ~/Documents/keqing and merge bundled defaults. Safe to call when frozen.'''
+    if os.path.exists(folder):
+        if not os.path.exists(character_path):
+            copy_default_character(character_path)
+        else:
+            merge_new_characters(character_path)
+        if not os.path.exists(archive_path):
+            create_archieve()
+        if not os.path.exists(equipped_path):
+            create_equipped()
+        if not os.path.exists(coefficient_path):
+            create_coefficient()
+        if not os.path.exists(settings_path):
+            create_settings()
+    else:
+        os.makedirs(folder)
+        copy_default_character(character_path)
         create_archieve()
-    if not os.path.exists(equipped_path):
         create_equipped()
-    # 
-    if not os.path.exists(coefficient_path):
         create_coefficient()
-    if not os.path.exists(settings_path):
         create_settings()
 
-# 数据文件夹不存在则新建文件夹并复制、新建相关数据文件
-else:
-    os.makedirs(folder)
-    shutil.copy('src/character.json', character_path)
-    create_archieve()
-    create_equipped()
-    create_coefficient()
-    create_settings()
+# 数据文件夹存在则更新、补充相关配置文件；不存在则新建
+ensure_user_data()

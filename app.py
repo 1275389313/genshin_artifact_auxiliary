@@ -2,6 +2,7 @@
 
 import sys, os
 import ctypes
+from paths import resource_path
 
 def _set_process_dpi_awareness_early():
     '''在导入 Qt / 读取窗口矩形之前设 Per-Monitor V2，截图、点击、贴图共用物理像素。'''
@@ -40,7 +41,7 @@ class MainWindow(QMainWindow):
     def __init__(self):
         super().__init__()
         self.setWindowFlags(Qt.WindowStaysOnTopHint)
-        self.setWindowIcon(QIcon(os.path.join(os.path.dirname(__file__), 'src/keqing.ico')))
+        self.setWindowIcon(QIcon(resource_path('src', 'keqing.ico')))
         self.setWindowTitle("刻晴办公桌")
         self.setFocusPolicy(Qt.StrongFocus)
         self.setMinimumSize(MIN_WINDOW_SIZE)
