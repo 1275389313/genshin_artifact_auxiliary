@@ -2,11 +2,19 @@
 
 from PIL import ImageGrab, Image
 import re
-from rapidocr import RapidOCR, OCRVersion
+from rapidocr import RapidOCR
 
-ocr = RapidOCR(params={"EngineConfig.onnxruntime.use_dml": True,
-                       "Det.ocr_version": OCRVersion.PPOCRV5,
-                       "Rec.ocr_version": OCRVersion.PPOCRV5})
+
+def _init_ocr():
+    '''跟随 rapidocr 默认版本（PP-OCRv6+）。优先 DirectML，失败则回退默认引擎。'''
+    try:
+        return RapidOCR(params={"EngineConfig.onnxruntime.use_dml": True})
+    except Exception as e:
+        print(f'RapidOCR DirectML 初始化失败（{e}），回退默认引擎')
+        return RapidOCR()
+
+
+ocr = _init_ocr()
 
 def rapid_ocr(x, y, w, h):
     '''返回使用paddle ocr引擎识别及处理结果

@@ -40,7 +40,7 @@
    2. pynput，监听游戏窗口内鼠标操作
    3. pywin32，获取设备分辨率、缩放信息，用于兼容不同分辨率
    4. pyqtdarktheme，GUI 样式，使用了 0.1.7 老版本，新版本有兼容性问题
-   5. rapidocr，paddleocr 使用 onnx 模型接口，需另外安装 onnxruntime-directml 使用 GPU 加速，详见 rapidocr 文档
+   5. rapidocr（请用当前版本；默认 PP-OCRv6，不要再强制 Det/Rec 为 PP-OCRv4/v5 small，否则会报 Invalid OCR configuration）。paddleocr 使用 onnx 模型接口，需另外安装 onnxruntime-directml 使用 GPU 加速；无 DirectML 时会回退默认引擎，详见 rapidocr 文档
    6. requests，新版本提醒
 
 ### 使用打包好的 exe 程序
