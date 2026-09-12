@@ -362,7 +362,12 @@ class MainPage(QWidget):
                             break
                         # ocr识别与结果返回并刷新主面板、贴图
                         self.id = j * self.col + i
-                        self.artifact[str(self.id)] = list(ocr.rapid_ocr(self.x_grab, self.y_grab, self.w_grab, self.h_grab))
+                        try:
+                            self.artifact[str(self.id)] = list(ocr.rapid_ocr(
+                                self.x_grab, self.y_grab, self.w_grab, self.h_grab))
+                        except ValueError as exc:
+                            print(exc)
+                            break
                         self.fresh_main_window()
                         self.fresh_paste_window()
                         break
@@ -669,7 +674,12 @@ class MainPage(QWidget):
         if not self._scanning:
             return
         i = self._scan_index
-        piece = list(ocr.rapid_ocr(self.x_grab, self.y_grab, self.w_grab, self.h_grab))
+        try:
+            piece = list(ocr.rapid_ocr(self.x_grab, self.y_grab, self.w_grab, self.h_grab))
+        except ValueError as exc:
+            print(exc)
+            self._finish_scan()
+            return
         self.equipped_artifact[i] = piece
         rolls = effective_rolls.cal_effective_rolls(piece[1], self.config)
         self.equipped_rolls[i] = rolls[1]

@@ -144,5 +144,60 @@ class Layout4kTests(unittest.TestCase):
         self.assertNotIn('1920*1080', text)
 
 
+class MinimizedRectTests(unittest.TestCase):
+    # 用户日志：GetWindowRect(-32000, -32000, -31763, -31961) → 宽高比 -12、OCR 负高度崩溃
+    _BUG_RECT = (-32000, -32000, -31763, -31961)
+
+    def test_bug_screenshot_rect_is_invalid(self):
+        self.assertTrue(loc.is_minimized_or_invalid_rect(*self._BUG_RECT))
+
+    def test_iconic_flag_invalid_even_if_rect_looks_normal(self):
+        self.assertTrue(loc.is_minimized_or_invalid_rect(
+            0, 0, 3840, 2160, iconic=True))
+
+    def test_restored_4k_rect_is_valid(self):
+        self.assertFalse(loc.is_minimized_or_invalid_rect(0, 0, 3840, 2160))
+
+    def test_multimonitor_negative_origin_is_valid(self):
+        self.assertFalse(loc.is_minimized_or_invalid_rect(-1920, 0, 0, 1080))
+
+    def test_non_positive_size_is_invalid(self):
+        self.assertTrue(loc.is_minimized_or_invalid_rect(10, 10, 10, 100))
+        self.assertTrue(loc.is_minimized_or_invalid_rect(0, 100, 100, 50))
+
+    def test_caption_correction_of_minimized_still_unusable(self):
+        x, y, w, h, already, src = loc.correct_window_rect(
+            *self._BUG_RECT, 1.5, 3840, 2160, dpi_aware=True)
+        self.assertAlmostEqual(x, -31989.5)
+        self.assertAlmostEqual(y, -31953.5)
+        self.assertAlmostEqual(w, 216.0)
+        self.assertAlmostEqual(h, -18.0)
+        self.assertTrue(w <= 0 or h <= 0)
+        self.assertTrue(loc.is_invalid_grab_bbox(x, y, w, h))
+
+    def test_wait_message_minimized(self):
+        msg = loc.decide_window_wait(1, False, self._BUG_RECT)
+        self.assertEqual(msg, loc.WAIT_MSG_MINIMIZED)
+        self.assertIn('最小化', msg)
+        self.assertEqual(loc.decide_window_wait(1, True, (0, 0, 3840, 2160)),
+                         loc.WAIT_MSG_MINIMIZED)
+        self.assertEqual(loc.decide_window_wait(0, False, (0, 0, 0, 0)),
+                         loc.WAIT_MSG_MISSING)
+
+    def test_wait_none_when_restored(self):
+        self.assertIsNone(loc.decide_window_wait(42, False, (0, 0, 3840, 2160)))
+
+    def test_invalid_grab_bbox_negative_height(self):
+        self.assertTrue(loc.is_invalid_grab_bbox(-31989.5, -31953.5, 216.0, -18.0))
+        self.assertFalse(loc.is_invalid_grab_bbox(100, 100, 400, 500))
+
+    def test_restored_4k_still_16_9(self):
+        kind, warn, hard, layout, ratio = loc.resolve_layout(0, 0, 3840, 2160)
+        self.assertEqual(kind, '16:9')
+        self.assertFalse(hard)
+        self.assertAlmostEqual(ratio, 16 / 9, places=2)
+        self.assertAlmostEqual(ratio, 1.78, places=2)
+
+
 if __name__ == '__main__':
     unittest.main()
