@@ -1,6 +1,29 @@
 '''主窗口'''
 
 import sys, os
+import ctypes
+
+def _set_process_dpi_awareness_early():
+    '''在导入 Qt / 读取窗口矩形之前设 Per-Monitor V2，截图、点击、贴图共用物理像素。'''
+    if os.name != 'nt':
+        return
+    try:
+        ctypes.windll.user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4))
+        return
+    except Exception:
+        pass
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        return
+    except Exception:
+        pass
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+    except Exception:
+        pass
+
+_set_process_dpi_awareness_early()
+
 import qdarktheme
 from PySide6.QtWidgets import QApplication, QMainWindow, QWidget, QStackedLayout, QSizePolicy
 from PySide6.QtCore import Qt
