@@ -32,6 +32,8 @@ class MainPage(QWidget):
         self.combobox = ExtendedComboBox()
 
         self.scanbtn = QPushButton('扫描五件 (F8)')
+        self.clearbtn = QPushButton('清除贴图')
+        self.clearbtn.setToolTip('隐藏游戏窗口上的有效词条贴图（Ctrl+Shift+Z），不删除已保存的扫描')
         self.set_total = QLabel('有效词条 0.0（0/5）')
         self.notice = QLabel('')
         self.notice.setWordWrap(True)
@@ -55,7 +57,8 @@ class MainPage(QWidget):
         self.layout.addWidget(self.combobox, 0, 0, 1, 3)
         self.layout.addWidget(self.settingbtn, 0, 3, Qt.AlignRight)
         self.layout.addWidget(self.scanbtn, 1, 0, 1, 2)
-        self.layout.addWidget(self.set_total, 1, 2, 1, 2, Qt.AlignRight)
+        self.layout.addWidget(self.clearbtn, 1, 2)
+        self.layout.addWidget(self.set_total, 1, 3, Qt.AlignRight)
         self.layout.addWidget(self.notice, 2, 0, 1, 4)
         for i, label in enumerate(self.slot_summary):
             self.layout.addWidget(label, 3 + i, 0, 1, 4)
@@ -120,6 +123,7 @@ class MainPage(QWidget):
         self.github.setCursor(Qt.PointingHandCursor)
         self.github.mousePressEvent = self.open_github
         self.scanbtn.clicked.connect(self.start_five_slot_scan)
+        self.clearbtn.clicked.connect(self.clear_game_overlays)
         self.hotkey()
         self.bind_scan_hotkey()
         self.apply_old_score_visibility()
@@ -145,12 +149,16 @@ class MainPage(QWidget):
             item.close()
         self.total_paste.close()
 
+    def clear_game_overlays(self):
+        '''隐藏游戏内部位+合计贴图；与 Ctrl+Shift+Z 相同，不删 equipped.json。'''
+        print('reset!')
+        self._show_game_overlays = False
+        self.hide_slot_overlays()
+        self.refresh_set_total()
+
     def hotkey(self):
         def on_activate():
-            print('reset!')
-            self._show_game_overlays = False
-            self.hide_slot_overlays()
-            self.refresh_set_total()
+            QTimer.singleShot(0, self.clear_game_overlays)
 
         h = keyboard.GlobalHotKeys({'<ctrl>+<shift>+z': on_activate})
         h.start()
@@ -304,7 +312,8 @@ class MainPage(QWidget):
         self.equipped_rolls[i] = rolls[1]
         self.slot_pastes[i].label.setText('{:.1f}'.format(rolls[1]))
         self.slot_pastes[i].move(self.slot_overlay[i][0] / self.SCALE, self.slot_overlay[i][1] / self.SCALE)
-        self.slot_pastes[i].show()
+        if self._show_game_overlays:
+            self.slot_pastes[i].show()
         self._refresh_summary()
         self.refresh_set_total()
         self._scan_index += 1
