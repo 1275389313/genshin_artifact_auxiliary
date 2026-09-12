@@ -4,6 +4,11 @@ from PIL import ImageGrab, Image
 import re
 import sys
 from rapidocr import RapidOCR
+from paths import ocr_cache_path
+
+# Frozen src/ is not a writable working directory; dump debug images to %TEMP%/keqing_ocr/.
+_GRAB_PNG = ocr_cache_path('grab.png')
+_OUT_PNG = ocr_cache_path('out.png')
 
 
 def _init_ocr():
@@ -110,13 +115,16 @@ def rapid_ocr(x, y, w, h):
 
     # 截屏与ocr识别
     img = ImageGrab.grab(bbox = (x, y, x + w, y + h))
-    img.save('src/grab.png')
+    img.save(_GRAB_PNG)
     if is_near_blank_image(img):
         raise ValueError(BLANK_GRAB_MSG)
-    result = ocr('src/grab.png', use_det=True, use_cls=False, use_rec=True)
+    result = ocr(_GRAB_PNG, use_det=True, use_cls=False, use_rec=True)
     txts = None if result is None else getattr(result, 'txts', None)
     txts = require_ocr_texts(txts)
-    result.vis('src/out.png')
+    try:
+        result.vis(_OUT_PNG)
+    except Exception as e:
+        print(f'OCR 调试图写出失败（{_OUT_PNG}）：{e}')
 
     # 千位符（含误识别的.）兼容并转化为list
     pattern_thou = r'\d\.\d{3}|\d\,\d{3}'

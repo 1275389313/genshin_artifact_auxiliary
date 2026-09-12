@@ -8,6 +8,8 @@ import unittest
 from unittest.mock import MagicMock
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
+if _ROOT not in sys.path:
+    sys.path.insert(0, _ROOT)
 
 
 def _load_ocr():
@@ -149,6 +151,15 @@ class RapidOcrEmptyGrabTests(unittest.TestCase):
         with self.assertRaises(ValueError) as ctx:
             self.ocr.rapid_ocr(-32000, -32000, 216, -18)
         self.assertIn('截图区域无效', str(ctx.exception))
+
+    def test_debug_images_use_temp_cache_not_src(self):
+        grab = self.ocr._GRAB_PNG
+        out = self.ocr._OUT_PNG
+        self.assertNotEqual(grab, 'src/grab.png')
+        self.assertNotEqual(out, 'src/out.png')
+        self.assertTrue(grab.endswith(os.path.join('keqing_ocr', 'grab.png')))
+        self.assertTrue(out.endswith(os.path.join('keqing_ocr', 'out.png')))
+        self.assertTrue(os.path.isdir(os.path.dirname(grab)))
 
 
 if __name__ == '__main__':
