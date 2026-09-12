@@ -2,6 +2,7 @@
 
 from PIL import ImageGrab, Image
 import re
+import sys
 from rapidocr import RapidOCR
 
 
@@ -18,6 +19,7 @@ ocr = _init_ocr()
 
 # 与 location.is_invalid_grab_bbox 同口径；不 import location，避免独立跑 ocr.py 时等待游戏窗口。
 _MINIMIZED_COORD_MAX = -16000
+BLANK_GRAB_MSG = '截图空白，请确认原神窗口在最前且角色圣遗物详情已打开'
 
 
 def is_invalid_grab_bbox(x, y, w, h):
@@ -36,6 +38,49 @@ def is_invalid_grab_bbox(x, y, w, h):
     if min(x, y, x + w, y + h) <= _MINIMIZED_COORD_MAX:
         return True
     return False
+
+
+def is_near_blank_image(img, near=16, min_ratio=0.96):
+    '''几乎全白或全黑的截图（被其它窗口挡住时 ImageGrab 常见近白 ~252）。'''
+    if img is None:
+        return True
+    try:
+        gray = img.convert('L')
+        hist = gray.histogram()
+        n = gray.size[0] * gray.size[1]
+    except Exception:
+        return False
+    if n <= 0:
+        return True
+    near_black = sum(hist[:near + 1])
+    near_white = sum(hist[255 - near:])
+    return (near_black / n) >= min_ratio or (near_white / n) >= min_ratio
+
+
+def require_ocr_texts(txts):
+    '''RapidOCR 无检测结果时 txts 为 None，不能直接 for 迭代。'''
+    if txts is None:
+        raise ValueError(BLANK_GRAB_MSG)
+    try:
+        empty = len(txts) == 0
+    except TypeError:
+        raise ValueError(BLANK_GRAB_MSG)
+    if empty:
+        raise ValueError(BLANK_GRAB_MSG)
+    return txts
+
+
+def _bring_game_foreground():
+    '''复用已加载的 location.bring_game_to_foreground，避免此处 import 触发等窗口。'''
+    loc = sys.modules.get('location')
+    fn = getattr(loc, 'bring_game_to_foreground', None) if loc is not None else None
+    if not callable(fn):
+        return False
+    try:
+        return bool(fn())
+    except Exception as exc:
+        print(f'置顶游戏窗口失败: {exc}')
+        return False
 
 
 def rapid_ocr(x, y, w, h):
@@ -61,15 +106,21 @@ def rapid_ocr(x, y, w, h):
             '游戏窗口可能已最小化或尚未还原，请还原「原神」窗口后重试。'
         )
 
+    _bring_game_foreground()
+
     # 截屏与ocr识别
     img = ImageGrab.grab(bbox = (x, y, x + w, y + h))
     img.save('src/grab.png')
+    if is_near_blank_image(img):
+        raise ValueError(BLANK_GRAB_MSG)
     result = ocr('src/grab.png', use_det=True, use_cls=False, use_rec=True)
+    txts = None if result is None else getattr(result, 'txts', None)
+    txts = require_ocr_texts(txts)
     result.vis('src/out.png')
 
     # 千位符（含误识别的.）兼容并转化为list
     pattern_thou = r'\d\.\d{3}|\d\,\d{3}'
-    txt = [re.sub(pattern_thou, item.replace(',', '').replace('.', ''), item) for item in result.txts]
+    txt = [re.sub(pattern_thou, item.replace(',', '').replace('.', ''), item) for item in txts]
     print(txt)
 
     # ocr错误修正，并构建基础信息

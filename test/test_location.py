@@ -199,5 +199,80 @@ class MinimizedRectTests(unittest.TestCase):
         self.assertAlmostEqual(ratio, 1.78, places=2)
 
 
+class FakeForegroundApi:
+    def __init__(self, hwnd=42, fg=99, iconic=False, set_fails=0, raise_on_set=True):
+        self.hwnd = hwnd
+        self.fg = fg
+        self.iconic = iconic
+        self.set_fails = set_fails
+        self.raise_on_set = raise_on_set
+        self.calls = []
+
+    def is_iconic(self, hwnd):
+        return self.iconic
+
+    def show_window(self, hwnd, cmd):
+        self.calls.append(('show', cmd))
+        self.iconic = False
+
+    def set_foreground(self, hwnd):
+        self.calls.append(('set', hwnd))
+        if self.set_fails > 0:
+            self.set_fails -= 1
+            if self.raise_on_set:
+                raise OSError('SetForegroundWindow denied')
+            return
+        self.fg = hwnd
+
+    def get_foreground(self):
+        return self.fg
+
+    def alt_down(self):
+        self.calls.append('alt_down')
+
+    def alt_up(self):
+        self.calls.append('alt_up')
+
+
+class ForegroundTests(unittest.TestCase):
+    def test_already_foreground_skips_alt(self):
+        api = FakeForegroundApi(hwnd=7, fg=7)
+        self.assertTrue(loc.try_set_foreground(7, api))
+        self.assertNotIn('alt_down', api.calls)
+        self.assertNotIn(('set', 7), api.calls)
+
+    def test_iconic_restores_then_sets(self):
+        api = FakeForegroundApi(hwnd=7, fg=1, iconic=True)
+        self.assertTrue(loc.try_set_foreground(7, api))
+        self.assertIn(('show', 'restore'), api.calls)
+        self.assertIn(('set', 7), api.calls)
+        self.assertFalse(api.iconic)
+        self.assertEqual(api.fg, 7)
+
+    def test_set_denied_uses_alt_trick(self):
+        api = FakeForegroundApi(hwnd=7, fg=1, set_fails=1)
+        self.assertTrue(loc.try_set_foreground(7, api))
+        self.assertIn('alt_down', api.calls)
+        self.assertIn('alt_up', api.calls)
+        self.assertEqual(api.fg, 7)
+
+    def test_alt_fail_then_restore_retry(self):
+        api = FakeForegroundApi(hwnd=7, fg=1, set_fails=2)
+        self.assertTrue(loc.try_set_foreground(7, api))
+        shows = [c for c in api.calls if c[0] == 'show']
+        self.assertTrue(any(c[1] == 'restore' for c in shows))
+        self.assertEqual(api.fg, 7)
+
+    def test_missing_hwnd_false(self):
+        api = FakeForegroundApi()
+        self.assertFalse(loc.try_set_foreground(0, api))
+        self.assertFalse(loc.try_set_foreground(None, api))
+
+    def test_find_game_window_without_win32(self):
+        self.assertFalse(loc._HAS_WIN32)
+        self.assertEqual(loc.find_game_window(), 0)
+        self.assertFalse(loc.bring_game_to_foreground())
+
+
 if __name__ == '__main__':
     unittest.main()
