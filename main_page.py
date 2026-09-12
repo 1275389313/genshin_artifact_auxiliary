@@ -8,6 +8,7 @@ from pynput.mouse import Button as MouseButton, Controller as MouseController
 import doc, location, ocr, score, effective_rolls, equipped
 from extention import ExtendedComboBox
 from paste_window import PasteWindow, TotalPasteWindow
+import paste_window
 
 from PySide6.QtCore import Qt, QUrl, QTimer, Signal
 from PySide6.QtGui import QPixmap, QDesktopServices
@@ -67,14 +68,7 @@ class MainPage(QWidget):
         self.setLayout(self.layout)
 
     def init_data(self):
-        # 角色装配页坐标：详情 OCR + 五部位点击/贴图
-        self.x_grab, self.y_grab, self.w_grab, self.h_grab = (
-            location.x_grab_B, location.y_grab_B, location.w_grab_B, location.h_grab_B)
-        self.SCALE = location.SCALE
-        self.slot_click = location.slot_click_B
-        self.slot_overlay = location.slot_overlay_B
-        self.total_overlay = location.total_overlay_B
-
+        # 角色装配页坐标：详情 OCR + 五部位点击/贴图（扫描前会再 refresh_layout）
         self.equipped_artifact = equipped.empty_slots()
         self.equipped_rolls = equipped.empty_slots()
         self._scanning = False
@@ -89,9 +83,8 @@ class MainPage(QWidget):
         for i in range(equipped.SLOT_COUNT):
             window = PasteWindow()
             self.slot_pastes.append(window)
-            self.slot_pastes[i].move(self.slot_overlay[i][0] / self.SCALE, self.slot_overlay[i][1] / self.SCALE)
         self.total_paste = TotalPasteWindow()
-        self.total_paste.move(self.total_overlay[0] / self.SCALE, self.total_overlay[1] / self.SCALE)
+        self._sync_layout_from_location()
 
         self.character = effective_rolls.FALLBACK_NAME
         self.config = dict(effective_rolls.FALLBACK_CONFIG)
@@ -211,7 +204,36 @@ class MainPage(QWidget):
     def hide_slot_overlays(self):
         for item in self.slot_pastes:
             item.hide()
-        self.total_paste.hide()
+        if self.total_paste is not None:
+            self.total_paste.hide()
+
+    def _sync_layout_from_location(self):
+        '''把 location 当前布局拷到本页：SCALE、截图框、点击、贴图。'''
+        geo = location.scan_geometry()
+        self.SCALE = geo['SCALE'] or 1.0
+        if self.SCALE <= 0:
+            self.SCALE = 1.0
+        self.x_grab, self.y_grab, self.w_grab, self.h_grab = (
+            geo['x_grab'], geo['y_grab'], geo['w_grab'], geo['h_grab'])
+        self.slot_click = geo['slot_click']
+        self.slot_overlay = geo['slot_overlay']
+        self.total_overlay = geo['total_overlay']
+        pscale = location.paste_qt_scale(geo['w_width'], self.SCALE)
+        paste_window.scale = pscale
+        for i, item in enumerate(self.slot_pastes):
+            item.apply_layout_scale(pscale)
+            item.move(self.slot_overlay[i][0] / self.SCALE, self.slot_overlay[i][1] / self.SCALE)
+        if self.total_paste is not None:
+            self.total_paste.apply_layout_scale(pscale)
+            self.total_paste.move(self.total_overlay[0] / self.SCALE, self.total_overlay[1] / self.SCALE)
+
+    def _refresh_scan_layout(self):
+        '''F8 前还原窗口并重算坐标；失败返回中文提示，成功返回 None。'''
+        ok, msg = location.prepare_scan_layout()
+        if not ok:
+            return msg or location.WAIT_MSG_MINIMIZED
+        self._sync_layout_from_location()
+        return None
 
     def _recompute_equipped_rolls(self):
         for i in range(equipped.SLOT_COUNT):
@@ -256,6 +278,14 @@ class MainPage(QWidget):
     def start_five_slot_scan(self):
         if self._scanning:
             return
+        err = self._refresh_scan_layout()
+        if err:
+            print(err)
+            self.notice.setText(err)
+            self.upgrade.setText(err)
+            return
+        _, char_notice = effective_rolls.resolve_character_config(self.character, self.characters)
+        self.notice.setText(char_notice or '')
         self._scanning = True
         self._scan_index = 0
         self._scan_character = self.character

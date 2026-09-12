@@ -170,13 +170,22 @@ def classify_aspect(ratio, w_width=0, w_hight=0):
                f'按 16:9 缩放坐标继续（4K/无边框可用）。若贴图偏移请改用无边框。')
         return '16:9', msg, False
     msg = (f'当前游戏窗口宽高比 {ratio:.4f} 暂不支持（非 16:9 / 16:10）。'
-           f'请使用 16:9 或 16:10 窗口/无边框（含 4K），然后重启软件。')
+           f'请使用 16:9 或 16:10 窗口/无边框（含 4K），然后重新扫描。')
     return 'unsupported', msg, True
 
 
 def slot_paste_height(w_width):
     '''部位贴图物理高度，与 paste_window.scale = w_width/1280/SCALE 一致。'''
     return SLOT_PASTE_REF_PX * float(w_width) / PASTE_REF_WIDTH
+
+
+def paste_qt_scale(w_width=None, display_scale=None):
+    '''贴图窗口 Qt 缩放：w_width/1280/SCALE。SCALE<=0 时当 1，避免导入或刷新除零。'''
+    w = float(w_width if w_width is not None else globals().get('w_width') or PASTE_REF_WIDTH)
+    s = float(display_scale if display_scale is not None else globals().get('SCALE') or 1.0)
+    if s <= 0:
+        s = 1.0
+    return w / PASTE_REF_WIDTH / s
 
 
 def total_overlay_y(slot_overlay_y, w_width, gap):
@@ -387,6 +396,42 @@ def find_game_window():
     return _find_game_window()
 
 
+class _Win32LayoutApi:
+    '''真实 win32 读窗口；单测可换成假对象，避免 while True 等窗口。'''
+
+    def find_window(self):
+        return _find_game_window()
+
+    def is_iconic(self, hwnd):
+        return bool(win32gui.IsIconic(hwnd))
+
+    def get_window_rect(self, hwnd):
+        return tuple(win32gui.GetWindowRect(hwnd))
+
+    def get_client_rect_screen(self, hwnd):
+        return _client_rect_screen(hwnd)
+
+    def desktop_metrics(self):
+        dpi_mode = set_process_dpi_awareness()
+        hDC = win32gui.GetDC(0)
+        try:
+            width_r = win32print.GetDeviceCaps(hDC, win32con.DESKTOPHORZRES)
+            height_r = win32print.GetDeviceCaps(hDC, win32con.DESKTOPVERTRES)
+            logpixelsx = win32print.GetDeviceCaps(hDC, win32con.LOGPIXELSX)
+        finally:
+            win32gui.ReleaseDC(0, hDC)
+        width_s = win32api.GetSystemMetrics(0)
+        height_s = win32api.GetSystemMetrics(1)
+        return dict(
+            dpi_mode=dpi_mode,
+            width_r=width_r,
+            height_r=height_r,
+            logpixelsx=logpixelsx,
+            width_s=width_s,
+            height_s=height_s,
+        )
+
+
 class _Win32ForegroundApi:
     def is_iconic(self, hwnd):
         return bool(win32gui.IsIconic(hwnd))
@@ -488,89 +533,158 @@ def bring_game_to_foreground(hwnd=None, settle_s=0.08):
     return ok
 
 
-def _bootstrap():
+def _publish_layout(layout, *, scale, window_hwnd, width_r_v, height_r_v,
+                    w_left_v, w_top_v, w_width_v, w_hight_v, ratio_v, aspect_kind_v):
+    '''把一次测量写入模块全局，供 MainPage / paste_window 读取。'''
     global SCALE, width_r, height_r, window
     global w_left, w_top, w_width, w_hight, ratio, aspect_kind
-    global x_initial_A, y_initial_A, x_offset_A, y_offset_A
-    global x_left_A, x_right_A, y_top_A, y_bottom_A
-    global x_grab_A, y_grab_A, w_grab_A, h_grab_A, row_A, col_A
-    global x_initial_B, y_initial_B, x_offset_B, y_offset_B
-    global x_left_B, x_right_B, y_top_B, y_bottom_B
-    global x_grab_B, y_grab_B, w_grab_B, h_grab_B, row_B, col_B
-    global slot_click_B, slot_overlay_B, total_overlay_B
     global position_A, position_B, xarray_A, yarray_A, xarray_B, yarray_B
 
-    dpi_mode = set_process_dpi_awareness()
-    hDC = win32gui.GetDC(0)
-    width_r = win32print.GetDeviceCaps(hDC, win32con.DESKTOPHORZRES)
-    height_r = win32print.GetDeviceCaps(hDC, win32con.DESKTOPVERTRES)
-    logpixelsx = win32print.GetDeviceCaps(hDC, win32con.LOGPIXELSX)
-    win32gui.ReleaseDC(0, hDC)
-    width_s = win32api.GetSystemMetrics(0)
-    height_s = win32api.GetSystemMetrics(1)
-    dpi_aware = dpi_mode not in ('unaware', 'skipped-non-windows')
-
-    # 未找到、或最小化（GetWindowRect≈-32000）时循环等待，不把无效矩形当布局。
-    while True:
-        window = _find_game_window()
-        iconic = False
-        rect = (0, 0, 0, 0)
-        if window:
-            try:
-                iconic = bool(win32gui.IsIconic(window))
-            except Exception:
-                iconic = False
-            try:
-                rect = tuple(win32gui.GetWindowRect(window))
-            except Exception:
-                rect = (0, 0, 0, 0)
-                iconic = True
-        wait_msg = decide_window_wait(window, iconic, rect)
-        if wait_msg:
-            print(wait_msg)
-            time.sleep(5)
-            continue
-
-        left, top, right, bottom = rect
-        # left, top, right, bottom = (0, 0, 3840, 2160)  # 游戏窗口不打开时后门，测试用
-        dpi = read_dpi(window, logpixelsx)
-        SCALE = compute_scale(width_r, width_s, dpi)
-        print(f'物理桌面{width_r, height_r}  GetSystemMetrics{width_s, height_s}  '
-              f'DPI={dpi}  SCALE={SCALE:.4f}  感知={dpi_mode}')
-        print(f'原始 GetWindowRect{left, top, right, bottom}')
-        client_rect = None
-        try:
-            client_rect = _client_rect_screen(window)
-            print(f'GetClientRect(screen){client_rect}')
-        except Exception as exc:
-            print(f'GetClientRect 失败: {exc}')
-
-        w_left, w_top, w_width, w_hight, already, src = correct_window_rect(
-            left, top, right, bottom, SCALE, width_r, height_r,
-            client_rect=client_rect, dpi_aware=dpi_aware)
-        print(f'修正后窗口 x,y,w,h{w_left, w_top, w_width, w_hight}  '
-              f'already_physical={already}  source={src}')
-        if (w_width <= 0 or w_hight <= 0
-                or is_minimized_or_invalid_rect(
-                    w_left, w_top, w_left + w_width, w_top + w_hight)):
-            print(WAIT_MSG_MINIMIZED)
-            time.sleep(5)
-            continue
-        break
-
-    kind, warn, hard_fail, layout, ratio = resolve_layout(
-        w_left, w_top, w_width, w_hight)
-    aspect_kind = kind
-    print(f'宽高比 ratio={ratio:.4f} → {kind}')
-    if warn:
-        print(warn)
-    if hard_fail:
-        print('请使用 16:9 或 16:10（窗口 / 无边框，含 4K），然后重启软件')
-
+    SCALE = scale
+    width_r, height_r = width_r_v, height_r_v
+    window = window_hwnd
+    w_left, w_top, w_width, w_hight = w_left_v, w_top_v, w_width_v, w_hight_v
+    ratio = ratio_v
+    aspect_kind = aspect_kind_v
     for key, value in layout.items():
         globals()[key] = value
     position_A, position_B, xarray_A, yarray_A, xarray_B, yarray_B = build_positions(layout)
 
 
+def install_default_layout():
+    '''无游戏窗口时的占位 1080p 16:9，保证 import / paste_window 不除零、不阻塞。'''
+    kind, _warn, _hard, layout, ratio_v = resolve_layout(0, 0, 1920, 1080)
+    _publish_layout(
+        layout, scale=1.0, window_hwnd=0, width_r_v=1920, height_r_v=1080,
+        w_left_v=0, w_top_v=0, w_width_v=1920, w_hight_v=1080,
+        ratio_v=ratio_v, aspect_kind_v=kind)
+
+
+def scan_geometry():
+    '''角色装配页扫描用到的坐标快照（F8 前 MainPage 应刷新后再拷贝）。'''
+    return dict(
+        SCALE=SCALE,
+        x_grab=x_grab_B,
+        y_grab=y_grab_B,
+        w_grab=w_grab_B,
+        h_grab=h_grab_B,
+        slot_click=list(slot_click_B),
+        slot_overlay=list(slot_overlay_B),
+        total_overlay=tuple(total_overlay_B),
+        w_width=w_width,
+        w_hight=w_hight,
+        w_left=w_left,
+        w_top=w_top,
+        aspect_kind=aspect_kind,
+        ratio=ratio,
+    )
+
+
+def bootstrap_once(api=None, verbose=True):
+    '''测量游戏窗口一次并更新布局。永不 sleep / while True。
+    返回 (ok, msg)：ok 时 msg 为 None；失败时 msg 为 WAIT_MSG_*，且不覆盖已有有效布局。
+    '''
+    if api is None:
+        if not _HAS_WIN32:
+            if verbose:
+                print(WAIT_MSG_MISSING)
+            return False, WAIT_MSG_MISSING
+        api = _Win32LayoutApi()
+
+    metrics = api.desktop_metrics()
+    dpi_mode = metrics.get('dpi_mode') or 'unaware'
+    width_r_v = metrics.get('width_r') or 0
+    height_r_v = metrics.get('height_r') or 0
+    logpixelsx = metrics.get('logpixelsx')
+    width_s = metrics.get('width_s') or 0
+    dpi_aware = dpi_mode not in ('unaware', 'skipped-non-windows')
+
+    window_hwnd = 0
+    iconic = False
+    rect = (0, 0, 0, 0)
+    try:
+        window_hwnd = api.find_window() or 0
+    except Exception:
+        window_hwnd = 0
+    if window_hwnd:
+        try:
+            iconic = bool(api.is_iconic(window_hwnd))
+        except Exception:
+            iconic = False
+        try:
+            rect = tuple(api.get_window_rect(window_hwnd))
+        except Exception:
+            rect = (0, 0, 0, 0)
+            iconic = True
+    wait_msg = decide_window_wait(window_hwnd, iconic, rect)
+    if wait_msg:
+        if verbose:
+            print(wait_msg)
+        return False, wait_msg
+
+    left, top, right, bottom = rect
+    dpi = read_dpi(window_hwnd, logpixelsx)
+    scale_v = compute_scale(width_r_v, width_s, dpi)
+    if verbose:
+        print(f'物理桌面{width_r_v, height_r_v}  GetSystemMetrics{width_s, metrics.get("height_s")}  '
+              f'DPI={dpi}  SCALE={scale_v:.4f}  感知={dpi_mode}')
+        print(f'原始 GetWindowRect{left, top, right, bottom}')
+    client_rect = None
+    try:
+        client_rect = api.get_client_rect_screen(window_hwnd)
+        if verbose:
+            print(f'GetClientRect(screen){client_rect}')
+    except Exception as exc:
+        if verbose:
+            print(f'GetClientRect 失败: {exc}')
+
+    w_left_v, w_top_v, w_width_v, w_hight_v, already, src = correct_window_rect(
+        left, top, right, bottom, scale_v, width_r_v, height_r_v,
+        client_rect=client_rect, dpi_aware=dpi_aware)
+    if verbose:
+        print(f'修正后窗口 x,y,w,h{w_left_v, w_top_v, w_width_v, w_hight_v}  '
+              f'already_physical={already}  source={src}')
+    if (w_width_v <= 0 or w_hight_v <= 0
+            or is_minimized_or_invalid_rect(
+                w_left_v, w_top_v, w_left_v + w_width_v, w_top_v + w_hight_v)):
+        if verbose:
+            print(WAIT_MSG_MINIMIZED)
+        return False, WAIT_MSG_MINIMIZED
+
+    kind, warn, hard_fail, layout, ratio_v = resolve_layout(
+        w_left_v, w_top_v, w_width_v, w_hight_v)
+    if verbose:
+        print(f'宽高比 ratio={ratio_v:.4f} → {kind}')
+        if warn:
+            print(warn)
+        if hard_fail:
+            print('请使用 16:9 或 16:10（窗口 / 无边框，含 4K），然后重新扫描')
+
+    _publish_layout(
+        layout, scale=scale_v, window_hwnd=window_hwnd,
+        width_r_v=width_r_v, height_r_v=height_r_v,
+        w_left_v=w_left_v, w_top_v=w_top_v, w_width_v=w_width_v, w_hight_v=w_hight_v,
+        ratio_v=ratio_v, aspect_kind_v=kind)
+    return True, None
+
+
+def refresh_layout(api=None, verbose=True):
+    '''扫描 / 贴图前重算窗口布局（分辨率或窗口大小变化后不必重启工具）。'''
+    return bootstrap_once(api=api, verbose=verbose)
+
+
+def prepare_scan_layout(api=None, restore=True, restore_fn=None, verbose=True):
+    '''F8 前：尽量还原并置顶原神，再一次性刷新布局。失败返回 WAIT_MSG_*，不循环。'''
+    if restore:
+        fn = restore_fn if restore_fn is not None else bring_game_to_foreground
+        if fn is bring_game_to_foreground:
+            fn(settle_s=0.15)
+        else:
+            fn()
+    return refresh_layout(api=api, verbose=verbose)
+
+
+# 导入只装占位布局；Windows 上再尝试一次真实窗口（失败只打印，不 sleep）。
+install_default_layout()
 if _HAS_WIN32:
-    _bootstrap()
+    bootstrap_once()
