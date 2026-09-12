@@ -20,6 +20,11 @@ _CHROME_TOP = 31
 _CHROME_X = 14
 _CHROME_Y = 38
 
+# 最小化窗口 GetWindowRect 约为 (-32000, -32000, ...)，不是 4K 计算错误。
+_MINIMIZED_COORD_MAX = -16000
+WAIT_MSG_MISSING = '未找到游戏窗口，请启动游戏！'
+WAIT_MSG_MINIMIZED = '游戏窗口已最小化或不可见，请还原「原神」窗口（不要最小化）后重试'
+
 
 def set_process_dpi_awareness():
     '''Per-Monitor V2（失败则降级）。须在读屏幕/窗口矩形和创建 Qt 之前调用。'''
@@ -91,6 +96,55 @@ def rect_already_physical(left, top, right, bottom, scale, desktop_w, desktop_h,
     if abs(raw_w - desktop_w) <= 24 and abs(raw_h - desktop_h) <= 80:
         return True
     return False
+
+
+def is_minimized_or_invalid_rect(left, top, right, bottom, iconic=False):
+    '''最小化 / 无效客户区：IsIconic、坐标接近 -32000、宽高非正。'''
+    if iconic:
+        return True
+    try:
+        left = float(left)
+        top = float(top)
+        right = float(right)
+        bottom = float(bottom)
+    except (TypeError, ValueError):
+        return True
+    width = right - left
+    height = bottom - top
+    if width <= 0 or height <= 0:
+        return True
+    if (left <= _MINIMIZED_COORD_MAX or top <= _MINIMIZED_COORD_MAX
+            or right <= _MINIMIZED_COORD_MAX or bottom <= _MINIMIZED_COORD_MAX):
+        return True
+    return False
+
+
+def is_invalid_grab_bbox(x, y, w, h):
+    '''ImageGrab.grab 在 w/h<=0 时会 ValueError: Coordinate lower < upper。'''
+    try:
+        x = float(x)
+        y = float(y)
+        w = float(w)
+        h = float(h)
+    except (TypeError, ValueError):
+        return True
+    if w <= 0 or h <= 0:
+        return True
+    if x + w <= x or y + h <= y:
+        return True
+    return is_minimized_or_invalid_rect(x, y, x + w, y + h)
+
+
+def decide_window_wait(hwnd, iconic, rect):
+    '''返回需打印的等待提示；窗口可用则 None。与「未找到游戏窗口」同一套循环。'''
+    if not hwnd:
+        return WAIT_MSG_MISSING
+    if rect is None or len(rect) != 4:
+        return WAIT_MSG_MINIMIZED
+    if is_minimized_or_invalid_rect(
+            rect[0], rect[1], rect[2], rect[3], iconic=bool(iconic)):
+        return WAIT_MSG_MINIMIZED
+    return None
 
 
 def classify_aspect(ratio, w_width=0, w_hight=0):
@@ -330,32 +384,53 @@ def _bootstrap():
     height_s = win32api.GetSystemMetrics(1)
     dpi_aware = dpi_mode not in ('unaware', 'skipped-non-windows')
 
-    window = _find_game_window()
-    while not window:
-        print('未找到游戏窗口，请启动游戏！')
-        time.sleep(5)
+    # 未找到、或最小化（GetWindowRect≈-32000）时循环等待，不把无效矩形当布局。
+    while True:
         window = _find_game_window()
+        iconic = False
+        rect = (0, 0, 0, 0)
+        if window:
+            try:
+                iconic = bool(win32gui.IsIconic(window))
+            except Exception:
+                iconic = False
+            try:
+                rect = tuple(win32gui.GetWindowRect(window))
+            except Exception:
+                rect = (0, 0, 0, 0)
+                iconic = True
+        wait_msg = decide_window_wait(window, iconic, rect)
+        if wait_msg:
+            print(wait_msg)
+            time.sleep(5)
+            continue
 
-    dpi = read_dpi(window, logpixelsx)
-    SCALE = compute_scale(width_r, width_s, dpi)
-    print(f'物理桌面{width_r, height_r}  GetSystemMetrics{width_s, height_s}  '
-          f'DPI={dpi}  SCALE={SCALE:.4f}  感知={dpi_mode}')
+        left, top, right, bottom = rect
+        # left, top, right, bottom = (0, 0, 3840, 2160)  # 游戏窗口不打开时后门，测试用
+        dpi = read_dpi(window, logpixelsx)
+        SCALE = compute_scale(width_r, width_s, dpi)
+        print(f'物理桌面{width_r, height_r}  GetSystemMetrics{width_s, height_s}  '
+              f'DPI={dpi}  SCALE={SCALE:.4f}  感知={dpi_mode}')
+        print(f'原始 GetWindowRect{left, top, right, bottom}')
+        client_rect = None
+        try:
+            client_rect = _client_rect_screen(window)
+            print(f'GetClientRect(screen){client_rect}')
+        except Exception as exc:
+            print(f'GetClientRect 失败: {exc}')
 
-    left, top, right, bottom = win32gui.GetWindowRect(window)
-    # left, top, right, bottom = (0, 0, 3840, 2160)  # 游戏窗口不打开时后门，测试用
-    print(f'原始 GetWindowRect{left, top, right, bottom}')
-    client_rect = None
-    try:
-        client_rect = _client_rect_screen(window)
-        print(f'GetClientRect(screen){client_rect}')
-    except Exception as exc:
-        print(f'GetClientRect 失败: {exc}')
-
-    w_left, w_top, w_width, w_hight, already, src = correct_window_rect(
-        left, top, right, bottom, SCALE, width_r, height_r,
-        client_rect=client_rect, dpi_aware=dpi_aware)
-    print(f'修正后窗口 x,y,w,h{w_left, w_top, w_width, w_hight}  '
-          f'already_physical={already}  source={src}')
+        w_left, w_top, w_width, w_hight, already, src = correct_window_rect(
+            left, top, right, bottom, SCALE, width_r, height_r,
+            client_rect=client_rect, dpi_aware=dpi_aware)
+        print(f'修正后窗口 x,y,w,h{w_left, w_top, w_width, w_hight}  '
+              f'already_physical={already}  source={src}')
+        if (w_width <= 0 or w_hight <= 0
+                or is_minimized_or_invalid_rect(
+                    w_left, w_top, w_left + w_width, w_top + w_hight)):
+            print(WAIT_MSG_MINIMIZED)
+            time.sleep(5)
+            continue
+        break
 
     kind, warn, hard_fail, layout, ratio = resolve_layout(
         w_left, w_top, w_width, w_hight)

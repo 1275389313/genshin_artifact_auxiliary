@@ -16,6 +16,28 @@ def _init_ocr():
 
 ocr = _init_ocr()
 
+# 与 location.is_invalid_grab_bbox 同口径；不 import location，避免独立跑 ocr.py 时等待游戏窗口。
+_MINIMIZED_COORD_MAX = -16000
+
+
+def is_invalid_grab_bbox(x, y, w, h):
+    '''w/h<=0 或坐标接近最小化哨兵时不可送进 ImageGrab。'''
+    try:
+        x = float(x)
+        y = float(y)
+        w = float(w)
+        h = float(h)
+    except (TypeError, ValueError):
+        return True
+    if w <= 0 or h <= 0:
+        return True
+    if x + w <= x or y + h <= y:
+        return True
+    if min(x, y, x + w, y + h) <= _MINIMIZED_COORD_MAX:
+        return True
+    return False
+
+
 def rapid_ocr(x, y, w, h):
     '''返回使用paddle ocr引擎识别及处理结果
     参数：
@@ -32,6 +54,12 @@ def rapid_ocr(x, y, w, h):
             value：词条数值
             如：{'防御力': 23.0, '元素充能效率': 5.8, '暴击伤害': 5.4}
     '''
+
+    if is_invalid_grab_bbox(x, y, w, h):
+        raise ValueError(
+            f'截图区域无效 x,y,w,h=({x}, {y}, {w}, {h})。'
+            '游戏窗口可能已最小化或尚未还原，请还原「原神」窗口后重试。'
+        )
 
     # 截屏与ocr识别
     img = ImageGrab.grab(bbox = (x, y, x + w, y + h))
