@@ -5,7 +5,7 @@ from PySide6.QtGui import QShortcut, QKeySequence
 from PySide6.QtWidgets import QVBoxLayout, QLabel, QWidget
 import location
 
-scale = location.w_width / 1280 / location.SCALE
+scale = location.paste_qt_scale()
 
 class PasteWindow(QWidget):
     def __init__(self):
@@ -35,6 +35,13 @@ class PasteWindow(QWidget):
         self.shortcut = QShortcut(QKeySequence('Ctrl+Z'), self)
         self.shortcut.activated.connect(self.close)
 
+    def apply_layout_scale(self, new_scale):
+        '''分辨率变化后按新 SCALE 重设字号与框大小。'''
+        font = self.label.font()
+        font.setPointSize(9 * new_scale)
+        self.label.setFont(font)
+        self.label.setFixedSize(24 * new_scale, 24 * new_scale)
+
     def close(self):
         self.hide()
 
@@ -61,6 +68,12 @@ class TotalPasteWindow(QWidget):
 
         self.shortcut = QShortcut(QKeySequence('Ctrl+Z'), self)
         self.shortcut.activated.connect(self.hide)
+
+    def apply_layout_scale(self, new_scale):
+        font = self.label.font()
+        font.setPointSize(max(8, int(10 * new_scale)))
+        self.label.setFont(font)
+        self.label.setFixedSize(int(180 * new_scale), int(28 * new_scale))
 
     def close(self):
         self.hide()

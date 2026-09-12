@@ -2,6 +2,9 @@
 
 import importlib.util
 import os
+import sys
+import time
+import types
 import unittest
 
 _ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -9,6 +12,8 @@ _SPEC = importlib.util.spec_from_file_location(
     'location_helpers', os.path.join(_ROOT, 'location.py'))
 loc = importlib.util.module_from_spec(_SPEC)
 _SPEC.loader.exec_module(loc)
+
+_MINIMIZED_RECT = (-32000, -32000, -31763, -31961)
 
 
 class ScaleTests(unittest.TestCase):
@@ -301,6 +306,250 @@ class ForegroundTests(unittest.TestCase):
         self.assertFalse(loc._HAS_WIN32)
         self.assertEqual(loc.find_game_window(), 0)
         self.assertFalse(loc.bring_game_to_foreground())
+
+
+class FakeLayoutApi:
+    def __init__(self, hwnd=1, iconic=False, rect=(0, 0, 3840, 2160),
+                 client_rect=None, desktop=(3840, 2160), sm=None,
+                 logpixelsx=144, dpi_mode='Per-Monitor-V2'):
+        self.hwnd = hwnd
+        self.iconic = iconic
+        self.rect = rect
+        self.client_rect = client_rect if client_rect is not None else rect
+        self.desktop = desktop
+        self.sm = sm or desktop
+        self.logpixelsx = logpixelsx
+        self.dpi_mode = dpi_mode
+
+    def find_window(self):
+        return self.hwnd
+
+    def is_iconic(self, hwnd):
+        return self.iconic
+
+    def get_window_rect(self, hwnd):
+        return self.rect
+
+    def get_client_rect_screen(self, hwnd):
+        if self.client_rect is None:
+            raise OSError('no client')
+        return self.client_rect
+
+    def desktop_metrics(self):
+        return dict(
+            dpi_mode=self.dpi_mode,
+            width_r=self.desktop[0],
+            height_r=self.desktop[1],
+            logpixelsx=self.logpixelsx,
+            width_s=self.sm[0],
+            height_s=self.sm[1],
+        )
+
+
+def _sleep_bomb(seconds):
+    raise AssertionError('bootstrap slept %.3fs; must not wait-loop' % seconds)
+
+
+class BootstrapOnceTests(unittest.TestCase):
+    def setUp(self):
+        loc.install_default_layout()
+        self._orig_sleep = loc.time.sleep
+        loc.time.sleep = _sleep_bomb
+
+    def tearDown(self):
+        loc.time.sleep = self._orig_sleep
+        loc.install_default_layout()
+
+    def test_default_layout_is_1080p(self):
+        geo = loc.scan_geometry()
+        self.assertEqual(geo['SCALE'], 1.0)
+        self.assertEqual(geo['w_width'], 1920)
+        self.assertEqual(geo['w_hight'], 1080)
+        self.assertEqual(geo['aspect_kind'], '16:9')
+
+    def test_missing_window_returns_wait_msg_without_sleep(self):
+        api = FakeLayoutApi(hwnd=0, rect=(0, 0, 0, 0))
+        ok, msg = loc.bootstrap_once(api=api, verbose=False)
+        self.assertFalse(ok)
+        self.assertEqual(msg, loc.WAIT_MSG_MISSING)
+
+    def test_minimized_returns_wait_msg_without_sleep(self):
+        api = FakeLayoutApi(hwnd=1, iconic=True, rect=_MINIMIZED_RECT)
+        ok, msg = loc.bootstrap_once(api=api, verbose=False)
+        self.assertFalse(ok)
+        self.assertEqual(msg, loc.WAIT_MSG_MINIMIZED)
+        self.assertIn('最小化', msg)
+
+    def test_minimized_sentinel_rect_without_iconic_flag(self):
+        api = FakeLayoutApi(hwnd=1, iconic=False, rect=_MINIMIZED_RECT)
+        ok, msg = loc.refresh_layout(api=api, verbose=False)
+        self.assertFalse(ok)
+        self.assertEqual(msg, loc.WAIT_MSG_MINIMIZED)
+
+    def test_minimized_many_calls_finish_quickly(self):
+        api = FakeLayoutApi(hwnd=1, iconic=True, rect=_MINIMIZED_RECT)
+        start = time.monotonic()
+        for _ in range(40):
+            ok, msg = loc.bootstrap_once(api=api, verbose=False)
+            self.assertFalse(ok)
+            self.assertEqual(msg, loc.WAIT_MSG_MINIMIZED)
+        self.assertLess(time.monotonic() - start, 1.0)
+
+    def test_failed_bootstrap_does_not_clobber_valid_layout(self):
+        api4k = FakeLayoutApi(
+            rect=(0, 0, 3840, 2160), client_rect=(0, 0, 3840, 2160),
+            desktop=(3840, 2160), logpixelsx=144)
+        ok, msg = loc.bootstrap_once(api=api4k, verbose=False)
+        self.assertTrue(ok)
+        self.assertIsNone(msg)
+        flower = loc.slot_click_B[0]
+        grab_w = loc.w_grab_B
+        api_min = FakeLayoutApi(iconic=True, rect=_MINIMIZED_RECT)
+        ok, msg = loc.bootstrap_once(api=api_min, verbose=False)
+        self.assertFalse(ok)
+        self.assertAlmostEqual(loc.slot_click_B[0][0], flower[0])
+        self.assertAlmostEqual(loc.w_grab_B, grab_w)
+
+    def test_refresh_after_fake_size_change_1440_to_4k(self):
+        api1440 = FakeLayoutApi(
+            rect=(0, 0, 2560, 1440), client_rect=(0, 0, 2560, 1440),
+            desktop=(2560, 1440), logpixelsx=96)
+        ok, _ = loc.refresh_layout(api=api1440, verbose=False)
+        self.assertTrue(ok)
+        geo1440 = loc.scan_geometry()
+        self.assertAlmostEqual(geo1440['slot_click'][0][0], 84 / 1920 * 2560)
+        self.assertAlmostEqual(geo1440['w_width'], 2560)
+        self.assertAlmostEqual(geo1440['x_grab'], 1461 / 1920 * 2560)
+
+        api4k = FakeLayoutApi(
+            rect=(0, 0, 3840, 2160), client_rect=(0, 0, 3840, 2160),
+            desktop=(3840, 2160), logpixelsx=144)
+        ok, _ = loc.refresh_layout(api=api4k, verbose=False)
+        self.assertTrue(ok)
+        geo4k = loc.scan_geometry()
+        self.assertAlmostEqual(geo4k['slot_click'][0][0], 84 / 1920 * 3840)
+        self.assertAlmostEqual(geo4k['slot_click'][0][1], 44 / 1080 * 2160)
+        self.assertAlmostEqual(geo4k['w_width'], 3840)
+        self.assertAlmostEqual(geo4k['h_grab'], 378 / 1080 * 2160)
+        self.assertNotAlmostEqual(geo4k['slot_click'][0][0], geo1440['slot_click'][0][0])
+        self.assertNotAlmostEqual(geo4k['x_grab'], geo1440['x_grab'])
+        self.assertAlmostEqual(geo4k['SCALE'], 1.5)
+        self.assertEqual(geo4k['aspect_kind'], '16:9')
+
+    def test_prepare_scan_restores_then_refreshes(self):
+        api = FakeLayoutApi(hwnd=7, iconic=True, rect=_MINIMIZED_RECT)
+        calls = []
+
+        def restore():
+            calls.append('restore')
+            api.iconic = False
+            api.rect = (0, 0, 3840, 2160)
+            api.client_rect = (0, 0, 3840, 2160)
+
+        ok, msg = loc.prepare_scan_layout(
+            api=api, restore_fn=restore, verbose=False)
+        self.assertEqual(calls, ['restore'])
+        self.assertTrue(ok)
+        self.assertIsNone(msg)
+        self.assertAlmostEqual(loc.w_width, 3840)
+
+    def test_prepare_scan_still_invalid_aborts_with_wait_msg(self):
+        api = FakeLayoutApi(hwnd=7, iconic=True, rect=_MINIMIZED_RECT)
+        ok, msg = loc.prepare_scan_layout(
+            api=api, restore_fn=lambda: None, verbose=False)
+        self.assertFalse(ok)
+        self.assertEqual(msg, loc.WAIT_MSG_MINIMIZED)
+
+    def test_paste_qt_scale_uses_current_width(self):
+        api4k = FakeLayoutApi(
+            rect=(0, 0, 3840, 2160), client_rect=(0, 0, 3840, 2160),
+            desktop=(3840, 2160), logpixelsx=144)
+        loc.refresh_layout(api=api4k, verbose=False)
+        self.assertAlmostEqual(loc.paste_qt_scale(), 3840 / 1280 / 1.5)
+
+
+def _install_fake_win32(hwnd=1, iconic=True, rect=_MINIMIZED_RECT):
+    win32con = types.ModuleType('win32con')
+    win32con.DESKTOPHORZRES = 118
+    win32con.DESKTOPVERTRES = 117
+    win32con.LOGPIXELSX = 88
+    win32con.SW_RESTORE = 9
+    win32con.SW_SHOW = 5
+    win32con.VK_MENU = 18
+    win32con.KEYEVENTF_KEYUP = 2
+
+    win32api = types.ModuleType('win32api')
+    win32api.GetSystemMetrics = lambda i: 3840 if i == 0 else 2160
+    win32api.keybd_event = lambda *a, **k: None
+
+    win32gui = types.ModuleType('win32gui')
+    win32gui.FindWindow = lambda *a, **k: hwnd
+    win32gui.IsIconic = lambda h: iconic
+    win32gui.GetWindowRect = lambda h: rect
+    win32gui.GetDC = lambda h: 1
+    win32gui.ReleaseDC = lambda *a, **k: None
+    win32gui.GetClientRect = lambda h: (0, 0, 0, 0)
+    win32gui.ClientToScreen = lambda h, p: (rect[0], rect[1])
+    win32gui.BringWindowToTop = lambda h: None
+    win32gui.SetForegroundWindow = lambda h: None
+    win32gui.GetForegroundWindow = lambda: 0
+    win32gui.ShowWindow = lambda h, c: None
+
+    win32print = types.ModuleType('win32print')
+    caps = {118: 3840, 117: 2160, 88: 144}
+    win32print.GetDeviceCaps = lambda hdc, idx: caps.get(idx, 96)
+
+    sys.modules['win32con'] = win32con
+    sys.modules['win32api'] = win32api
+    sys.modules['win32gui'] = win32gui
+    sys.modules['win32print'] = win32print
+
+
+def _clear_fake_win32():
+    for key in ('win32con', 'win32api', 'win32gui', 'win32print'):
+        sys.modules.pop(key, None)
+
+
+class ImportDoesNotHangTests(unittest.TestCase):
+    def test_import_with_minimized_win32_does_not_loop(self):
+        name = 'location_fake_win32_minimized'
+        sys.modules.pop(name, None)
+        _install_fake_win32(iconic=True, rect=_MINIMIZED_RECT)
+        orig_sleep = time.sleep
+        time.sleep = _sleep_bomb
+        try:
+            spec = importlib.util.spec_from_file_location(
+                name, os.path.join(_ROOT, 'location.py'))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+            self.assertTrue(mod._HAS_WIN32)
+            self.assertEqual(mod.w_width, 1920)
+            self.assertEqual(mod.SCALE, 1.0)
+            ok, msg = mod.bootstrap_once(verbose=False)
+            self.assertFalse(ok)
+            self.assertEqual(msg, mod.WAIT_MSG_MINIMIZED)
+        finally:
+            time.sleep = orig_sleep
+            _clear_fake_win32()
+            sys.modules.pop(name, None)
+
+    def test_import_with_missing_window_keeps_default_layout(self):
+        name = 'location_fake_win32_missing'
+        sys.modules.pop(name, None)
+        _install_fake_win32(hwnd=0, iconic=False, rect=(0, 0, 0, 0))
+        orig_sleep = time.sleep
+        time.sleep = _sleep_bomb
+        try:
+            spec = importlib.util.spec_from_file_location(
+                name, os.path.join(_ROOT, 'location.py'))
+            mod = importlib.util.module_from_spec(spec)
+            spec.loader.exec_module(mod)
+        finally:
+            time.sleep = orig_sleep
+            _clear_fake_win32()
+            sys.modules.pop(name, None)
+        self.assertEqual(mod.w_width, 1920)
+        self.assertAlmostEqual(mod.slot_click_B[0][0], 84)
 
 
 if __name__ == '__main__':
