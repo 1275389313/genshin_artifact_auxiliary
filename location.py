@@ -362,6 +362,114 @@ def _find_game_window():
     return window_sc or window_start
 
 
+def find_game_window():
+    '''UnityWndClass/原神 或 START 云游戏。找不到或不在 Windows 上返回 0。'''
+    if not _HAS_WIN32:
+        return 0
+    return _find_game_window()
+
+
+class _Win32ForegroundApi:
+    def is_iconic(self, hwnd):
+        return bool(win32gui.IsIconic(hwnd))
+
+    def show_window(self, hwnd, cmd):
+        flag = win32con.SW_RESTORE if cmd == 'restore' else win32con.SW_SHOW
+        win32gui.ShowWindow(hwnd, flag)
+
+    def set_foreground(self, hwnd):
+        try:
+            win32gui.BringWindowToTop(hwnd)
+        except Exception:
+            pass
+        win32gui.SetForegroundWindow(hwnd)
+
+    def get_foreground(self):
+        return win32gui.GetForegroundWindow()
+
+    def alt_down(self):
+        win32api.keybd_event(win32con.VK_MENU, 0, 0, 0)
+
+    def alt_up(self):
+        win32api.keybd_event(win32con.VK_MENU, 0, win32con.KEYEVENTF_KEYUP, 0)
+
+
+def try_set_foreground(hwnd, api):
+    '''还原最小化窗口并置前。SetForegroundWindow 失败时 ALT 技巧或 SW_RESTORE 再试。'''
+    if not hwnd:
+        return False
+
+    def _is_fg():
+        try:
+            return api.get_foreground() == hwnd
+        except Exception:
+            return False
+
+    try:
+        if api.is_iconic(hwnd):
+            api.show_window(hwnd, 'restore')
+    except Exception:
+        pass
+
+    if _is_fg():
+        return True
+
+    try:
+        api.set_foreground(hwnd)
+    except Exception:
+        pass
+    if _is_fg():
+        return True
+
+    try:
+        api.alt_down()
+        try:
+            api.set_foreground(hwnd)
+        finally:
+            api.alt_up()
+    except Exception:
+        try:
+            api.alt_up()
+        except Exception:
+            pass
+    if _is_fg():
+        return True
+
+    try:
+        api.show_window(hwnd, 'restore')
+        api.set_foreground(hwnd)
+    except Exception:
+        pass
+    return _is_fg()
+
+
+def bring_game_to_foreground(hwnd=None, settle_s=0.08):
+    '''扫描/OCR 前把原神提到最前，不保持最小化。失败只打印，不抛。'''
+    if not _HAS_WIN32:
+        return False
+    hwnd = hwnd or find_game_window()
+    if not hwnd:
+        print('未找到游戏窗口，无法置顶')
+        return False
+    api = _Win32ForegroundApi()
+    before = None
+    iconic = False
+    try:
+        before = api.get_foreground()
+    except Exception:
+        pass
+    try:
+        iconic = bool(api.is_iconic(hwnd))
+    except Exception:
+        iconic = False
+    ok = try_set_foreground(hwnd, api)
+    if ok and settle_s and (iconic or before != hwnd):
+        time.sleep(settle_s)
+    if not ok:
+        print('SetForegroundWindow 失败，请手动点击原神窗口置于最前')
+    return ok
+
+
 def _bootstrap():
     global SCALE, width_r, height_r, window
     global w_left, w_top, w_width, w_hight, ratio, aspect_kind

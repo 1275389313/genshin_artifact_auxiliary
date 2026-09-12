@@ -367,6 +367,7 @@ class MainPage(QWidget):
                                 self.x_grab, self.y_grab, self.w_grab, self.h_grab))
                         except ValueError as exc:
                             print(exc)
+                            self._flash_status(str(exc), 5000)
                             break
                         self.fresh_main_window()
                         self.fresh_paste_window()
@@ -647,7 +648,17 @@ class MainPage(QWidget):
         app = QApplication.instance()
         if app is not None:
             app.processEvents()
+        try:
+            location.bring_game_to_foreground()
+        except Exception as exc:
+            print('foreground game failed', exc)
         QTimer.singleShot(80, self._scan_click_current)
+
+    def _flash_status(self, text, ms=4000):
+        self.upgrade.setText(str(text))
+        self.timer = QTimer()
+        self.timer.timeout.connect(self.reset_myappid)
+        self.timer.start(ms)
 
     def _scan_click_current(self):
         if not self._scanning:
@@ -659,13 +670,17 @@ class MainPage(QWidget):
         app = QApplication.instance()
         if app is not None:
             app.processEvents()
+        try:
+            location.bring_game_to_foreground()
+        except Exception as exc:
+            print('foreground game failed', exc)
         x, y = self.slot_click[self._scan_index]
         try:
             self._mouse.position = (int(x), int(y))
             self._mouse.click(MouseButton.left, 1)
         except Exception as exc:
             print('scan click failed', exc)
-            self._finish_scan()
+            self._finish_scan('扫描点击失败，请确认原神窗口在最前')
             return
         delay = int(self.app_settings.get('scan_delay_ms') or 450)
         QTimer.singleShot(delay, self._scan_ocr_current)
@@ -675,10 +690,11 @@ class MainPage(QWidget):
             return
         i = self._scan_index
         try:
+            location.bring_game_to_foreground()
             piece = list(ocr.rapid_ocr(self.x_grab, self.y_grab, self.w_grab, self.h_grab))
         except ValueError as exc:
             print(exc)
-            self._finish_scan()
+            self._finish_scan(str(exc))
             return
         self.equipped_artifact[i] = piece
         rolls = effective_rolls.cal_effective_rolls(piece[1], self.config)
@@ -690,7 +706,7 @@ class MainPage(QWidget):
         self._scan_index += 1
         QTimer.singleShot(50, self._scan_click_current)
 
-    def _finish_scan(self):
+    def _finish_scan(self, message=None):
         self._scanning = False
         self.id = -1
         win = self.window()
@@ -705,7 +721,7 @@ class MainPage(QWidget):
         if last is not None:
             self._apply_piece_to_form(last)
         self.refresh_set_total()
-        self.upgrade.setText('五件扫描完成')
-        self.timer = QTimer()
-        self.timer.timeout.connect(self.reset_myappid)
-        self.timer.start(2000)
+        if message:
+            self._flash_status(message, 5000)
+        else:
+            self._flash_status('五件扫描完成', 2000)
