@@ -25,6 +25,10 @@ _MINIMIZED_COORD_MAX = -16000
 WAIT_MSG_MISSING = '未找到游戏窗口，请启动游戏！'
 WAIT_MSG_MINIMIZED = '游戏窗口已最小化或不可见，请还原「原神」窗口（不要最小化）后重试'
 
+# paste_window.PasteWindow 以宽 1280 时 24px 为参考；合计贴图放在部位数字下方。
+PASTE_REF_WIDTH = 1280
+SLOT_PASTE_REF_PX = 24
+
 
 def set_process_dpi_awareness():
     '''Per-Monitor V2（失败则降级）。须在读屏幕/窗口矩形和创建 Qt 之前调用。'''
@@ -170,6 +174,16 @@ def classify_aspect(ratio, w_width=0, w_hight=0):
     return 'unsupported', msg, True
 
 
+def slot_paste_height(w_width):
+    '''部位贴图物理高度，与 paste_window.scale = w_width/1280/SCALE 一致。'''
+    return SLOT_PASTE_REF_PX * float(w_width) / PASTE_REF_WIDTH
+
+
+def total_overlay_y(slot_overlay_y, w_width, gap):
+    '''合计贴图顶边：部位数字底边 + 间隙，避免盖住单件框。'''
+    return slot_overlay_y + slot_paste_height(w_width) + gap
+
+
 def _chrome_offsets(scale, already_physical):
     if already_physical and scale > 1.01:
         return (_CHROME_LEFT * scale, _CHROME_TOP * scale,
@@ -209,6 +223,8 @@ def correct_window_rect(left, top, right, bottom, scale, desktop_w, desktop_h,
 
 
 def layout_16_10(w_left, w_top, w_width, w_hight):
+    slot_oy = 82 / 1600 * w_hight + w_top
+    total_oy = total_overlay_y(slot_oy, w_width, 14 / 1600 * w_hight)
     return dict(
         x_initial_A=303 / 2560 * w_width + w_left,
         y_initial_A=424 / 1600 * w_hight + w_top,
@@ -244,17 +260,19 @@ def layout_16_10(w_left, w_top, w_width, w_hight):
             (706 / 2560 * w_width + w_left, 58 / 1600 * w_hight + w_top),
         ],
         slot_overlay_B=[
-            (138 / 2560 * w_width + w_left, 82 / 1600 * w_hight + w_top),
-            (291 / 2560 * w_width + w_left, 82 / 1600 * w_hight + w_top),
-            (439 / 2560 * w_width + w_left, 82 / 1600 * w_hight + w_top),
-            (582 / 2560 * w_width + w_left, 82 / 1600 * w_hight + w_top),
-            (732 / 2560 * w_width + w_left, 82 / 1600 * w_hight + w_top),
+            (138 / 2560 * w_width + w_left, slot_oy),
+            (291 / 2560 * w_width + w_left, slot_oy),
+            (439 / 2560 * w_width + w_left, slot_oy),
+            (582 / 2560 * w_width + w_left, slot_oy),
+            (732 / 2560 * w_width + w_left, slot_oy),
         ],
-        total_overlay_B=(200 / 2560 * w_width + w_left, 110 / 1600 * w_hight + w_top),
+        total_overlay_B=(200 / 2560 * w_width + w_left, total_oy),
     )
 
 
 def layout_16_9(w_left, w_top, w_width, w_hight):
+    slot_oy = 62 / 1080 * w_hight + w_top
+    total_oy = total_overlay_y(slot_oy, w_width, 14 / 1080 * w_hight)
     return dict(
         x_initial_A=226 / 1920 * w_width + w_left,
         y_initial_A=317 / 1080 * w_hight + w_top,
@@ -290,13 +308,13 @@ def layout_16_9(w_left, w_top, w_width, w_hight):
             (530 / 1920 * w_width + w_left, 44 / 1080 * w_hight + w_top),
         ],
         slot_overlay_B=[
-            (104 / 1920 * w_width + w_left, 62 / 1080 * w_hight + w_top),
-            (218 / 1920 * w_width + w_left, 62 / 1080 * w_hight + w_top),
-            (329 / 1920 * w_width + w_left, 62 / 1080 * w_hight + w_top),
-            (437 / 1920 * w_width + w_left, 62 / 1080 * w_hight + w_top),
-            (549 / 1920 * w_width + w_left, 62 / 1080 * w_hight + w_top),
+            (104 / 1920 * w_width + w_left, slot_oy),
+            (218 / 1920 * w_width + w_left, slot_oy),
+            (329 / 1920 * w_width + w_left, slot_oy),
+            (437 / 1920 * w_width + w_left, slot_oy),
+            (549 / 1920 * w_width + w_left, slot_oy),
         ],
-        total_overlay_B=(150 / 1920 * w_width + w_left, 82 / 1080 * w_hight + w_top),
+        total_overlay_B=(150 / 1920 * w_width + w_left, total_oy),
     )
 
 

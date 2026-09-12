@@ -144,6 +144,35 @@ class Layout4kTests(unittest.TestCase):
         self.assertNotIn('1920*1080', text)
 
 
+class OverlayLayoutTests(unittest.TestCase):
+    '''合计贴图须在部位数字下方，不能盖住 24px 参考框。'''
+
+    def _assert_total_below_slots(self, layout, w_width):
+        slot_h = loc.slot_paste_height(w_width)
+        slot_bottom = max(y for _, y in layout['slot_overlay_B']) + slot_h
+        total_y = layout['total_overlay_B'][1]
+        self.assertGreaterEqual(total_y, slot_bottom)
+
+    def test_16_9_1080_total_below_slots(self):
+        _, _, _, layout, _ = loc.resolve_layout(0, 0, 1920, 1080)
+        self._assert_total_below_slots(layout, 1920)
+        self.assertAlmostEqual(layout['slot_overlay_B'][0][1], 62)
+        # 旧坐标 y=82 会盖住 62+36 的部位框
+        self.assertGreaterEqual(layout['total_overlay_B'][1], 62 + 36)
+
+    def test_16_9_4k_total_below_slots(self):
+        _, _, _, layout, _ = loc.resolve_layout(0, 0, 3840, 2160)
+        self._assert_total_below_slots(layout, 3840)
+
+    def test_16_10_total_below_slots(self):
+        _, _, _, layout, _ = loc.resolve_layout(0, 0, 2560, 1600)
+        self._assert_total_below_slots(layout, 2560)
+
+    def test_16_10_4k_total_below_slots(self):
+        _, _, _, layout, _ = loc.resolve_layout(0, 0, 3840, 2400)
+        self._assert_total_below_slots(layout, 3840)
+
+
 class MinimizedRectTests(unittest.TestCase):
     # 用户日志：GetWindowRect(-32000, -32000, -31763, -31961) → 宽高比 -12、OCR 负高度崩溃
     _BUG_RECT = (-32000, -32000, -31763, -31961)
