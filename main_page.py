@@ -5,7 +5,7 @@ from pynput import keyboard
 
 from pynput.mouse import Button as MouseButton, Controller as MouseController
 
-import doc, location, ocr, score, effective_rolls, equipped
+import doc, location, ocr, score, effective_rolls, equipped, character_order
 from paths import resource_path
 from extention import ExtendedComboBox
 from paste_window import PasteWindow, TotalPasteWindow
@@ -92,7 +92,7 @@ class MainPage(QWidget):
 
         with open(doc.character_path, 'r', encoding='utf-8') as f:
             self.characters = json.load(f)
-        for key in self.characters:
+        for key in character_order.sort_character_names(self.characters):
             self.combobox.addItem(key)
         self.character = self.combobox.currentText()
         self.config, notice = effective_rolls.resolve_character_config(self.character, self.characters)
