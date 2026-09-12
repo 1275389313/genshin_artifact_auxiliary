@@ -6,6 +6,7 @@ folder = os.path.expanduser('~/Documents')
 folder = folder + '/keqing'
 character_path = folder + '/character.json'
 archive_path = folder + '/archive.json'
+equipped_path = folder + '/equipped.json'
 mona_path = folder + '/mona.json'
 coefficient_path = folder + '/coefficient.json'
 settings_path = folder + '/settings.json'
@@ -21,6 +22,10 @@ def create_archieve():
     with open(archive_path, 'w', encoding = 'utf-8') as fp:
             artifacts = {'背包':{}, '角色': {}}
             json.dump(artifacts, fp, ensure_ascii = False)
+
+def create_equipped():
+    with open(equipped_path, 'w', encoding = 'utf-8') as fp:
+        json.dump({}, fp, ensure_ascii = False)
 
 # 创建词条配置文件
 def create_coefficient():
@@ -86,6 +91,8 @@ if os.path.exists(folder):
     # 
     if not os.path.exists(archive_path):
         create_archieve()
+    if not os.path.exists(equipped_path):
+        create_equipped()
     # 
     if not os.path.exists(coefficient_path):
         create_coefficient()
@@ -97,5 +104,6 @@ else:
     os.makedirs(folder)
     shutil.copy('src/character.json', character_path)
     create_archieve()
+    create_equipped()
     create_coefficient()
     create_settings()
