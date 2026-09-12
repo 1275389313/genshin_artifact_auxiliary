@@ -1,172 +1,375 @@
 '''不同分辨率、缩放率适配，贴图坐标、圣遗物坐标、截图坐标定位'''
 
-import win32con, win32api, win32gui, win32print, time
+import ctypes
+import os
+import time
 
-# 基础分辨率，缩放信息获取
-hDC = win32gui.GetDC(0)
-width_r = win32print.GetDeviceCaps(hDC, win32con.DESKTOPHORZRES)
-height_r = win32print.GetDeviceCaps(hDC, win32con.DESKTOPVERTRES)
-width_s = win32api.GetSystemMetrics(0)
-print(f'分辨率{width_r, height_r}')
-SCALE = width_r / width_s
+RATIO_16_9 = 16 / 9
+RATIO_16_10 = 16 / 10
 
-# 游戏窗口信息获取
-window_sc = win32gui.FindWindow('UnityWndClass', '原神')
-window_start = win32gui.FindWindow('START Cloud Game', 'START云游戏-Game')
-window = window_sc or window_start
-# 未检测到窗口时循环直到检测到窗口
-while(not window):
-    print('未找到游戏窗口，请启动游戏！')
+# 旧版 16:9 / 16:10 判定略收紧，边框取整后 4K 容易掉到 else。
+_BAND_16_10 = (1.52, 1.68)
+_BAND_16_9 = (1.68, 1.86)
+_NEAREST_MAX_DELTA = 0.12
+_NEAR_16_9_FALLBACK = 0.18
+_LARGE_WINDOW_PX = 1600
+
+# Win10/11 窗口边框（100% DPI 逻辑像素）；已是物理像素时再乘 SCALE。
+_CHROME_LEFT = 7
+_CHROME_TOP = 31
+_CHROME_X = 14
+_CHROME_Y = 38
+
+
+def set_process_dpi_awareness():
+    '''Per-Monitor V2（失败则降级）。须在读屏幕/窗口矩形和创建 Qt 之前调用。'''
+    if os.name != 'nt':
+        return 'skipped-non-windows'
+    try:
+        user32 = ctypes.windll.user32
+        if user32.SetProcessDpiAwarenessContext(ctypes.c_void_p(-4)):
+            return 'Per-Monitor-V2'
+    except Exception:
+        pass
+    try:
+        ctypes.windll.shcore.SetProcessDpiAwareness(2)
+        return 'Per-Monitor'
+    except Exception:
+        pass
+    try:
+        ctypes.windll.user32.SetProcessDPIAware()
+        return 'System-DPI-Aware'
+    except Exception:
+        pass
+    return 'unaware'
+
+
+def read_dpi(hwnd=None, logpixelsx=None):
+    '''窗口 DPI；GetDpiForWindow / GetDpiForSystem / LOGPIXELSX。'''
+    if os.name == 'nt':
+        try:
+            if hwnd:
+                dpi = int(ctypes.windll.user32.GetDpiForWindow(int(hwnd)))
+                if dpi > 0:
+                    return dpi
+        except Exception:
+            pass
+        try:
+            dpi = int(ctypes.windll.user32.GetDpiForSystem())
+            if dpi > 0:
+                return dpi
+        except Exception:
+            pass
+    if logpixelsx:
+        return int(logpixelsx)
+    return 96
+
+
+def compute_scale(width_r, width_s, dpi=None):
+    '''显示缩放。DPI 感知后 GetSystemMetrics 已是物理像素，不能再用 DESKTOPHORZRES/SM 当 SCALE。'''
+    width_r = float(width_r or 0)
+    width_s = float(width_s or 0)
+    metrics_scale = (width_r / width_s) if width_s else 1.0
+    dpi_scale = (float(dpi) / 96.0) if dpi else None
+    if dpi_scale and abs(metrics_scale - 1.0) < 0.05 and dpi_scale > 1.05:
+        return dpi_scale
+    if abs(metrics_scale - 1.0) >= 0.05:
+        return metrics_scale
+    return dpi_scale or metrics_scale or 1.0
+
+
+def rect_already_physical(left, top, right, bottom, scale, desktop_w, desktop_h, dpi_aware=False):
+    '''GetWindowRect 是否已是物理像素（再乘 SCALE 会把 4K 拉成 8K、比例变形）。'''
+    raw_w = float(right) - float(left)
+    raw_h = float(bottom) - float(top)
+    if raw_w <= 0 or raw_h <= 0:
+        return bool(dpi_aware)
+    if dpi_aware:
+        return True
+    if scale > 1.01 and raw_w * scale > desktop_w * 1.15:
+        return True
+    if abs(raw_w - desktop_w) <= 24 and abs(raw_h - desktop_h) <= 80:
+        return True
+    return False
+
+
+def classify_aspect(ratio, w_width=0, w_hight=0):
+    '''返回 (kind, warn, hard_fail)。kind: 16:10 / 16:9 / unsupported。'''
+    ratio = float(ratio)
+    w_width = float(w_width or 0)
+    d9 = abs(ratio - RATIO_16_9)
+    d10 = abs(ratio - RATIO_16_10)
+    if _BAND_16_10[0] <= ratio <= _BAND_16_10[1]:
+        return '16:10', None, False
+    if _BAND_16_9[0] < ratio <= _BAND_16_9[1]:
+        return '16:9', None, False
+    if d10 <= _NEAREST_MAX_DELTA and d10 <= d9:
+        return '16:10', f'宽高比 {ratio:.4f} 接近 16:10，按 16:10 缩放坐标', False
+    if d9 <= _NEAREST_MAX_DELTA:
+        return '16:9', f'宽高比 {ratio:.4f} 接近 16:9，按 16:9 缩放坐标', False
+    if w_width >= _LARGE_WINDOW_PX and d9 <= _NEAR_16_9_FALLBACK:
+        msg = (f'宽高比 {ratio:.4f} 略超出 16:9 区间，但窗口较大且接近 16:9，'
+               f'按 16:9 缩放坐标继续（4K/无边框可用）。若贴图偏移请改用无边框。')
+        return '16:9', msg, False
+    msg = (f'当前游戏窗口宽高比 {ratio:.4f} 暂不支持（非 16:9 / 16:10）。'
+           f'请使用 16:9 或 16:10 窗口/无边框（含 4K），然后重启软件。')
+    return 'unsupported', msg, True
+
+
+def _chrome_offsets(scale, already_physical):
+    if already_physical and scale > 1.01:
+        return (_CHROME_LEFT * scale, _CHROME_TOP * scale,
+                _CHROME_X * scale, _CHROME_Y * scale)
+    return (_CHROME_LEFT, _CHROME_TOP, _CHROME_X, _CHROME_Y)
+
+
+def _is_borderless(phys_w, phys_h, desktop_w, desktop_h):
+    slop_w = max(16, desktop_w * 0.012)
+    slop_h = max(48, desktop_h * 0.03)
+    return abs(phys_w - desktop_w) <= slop_w and abs(phys_h - desktop_h) <= slop_h
+
+
+def correct_window_rect(left, top, right, bottom, scale, desktop_w, desktop_h,
+                        client_rect=None, dpi_aware=False):
+    '''客户区优先；避免 SCALE 连乘；无客户区时再做标题栏修正。返回 (x, y, w, h, already_physical, source)。'''
+    already = rect_already_physical(
+        left, top, right, bottom, scale, desktop_w, desktop_h, dpi_aware)
+    mul = 1.0 if already else scale
+
+    if client_rect:
+        cl, ct, cr, cb = client_rect
+        cw, ch = float(cr) - float(cl), float(cb) - float(ct)
+        if cw >= 64 and ch >= 64:
+            return (cl * mul, ct * mul, cw * mul, ch * mul, already, 'client')
+
+    phys_l, phys_t = left * mul, top * mul
+    phys_w = (right - left) * mul
+    phys_h = (bottom - top) * mul
+    if _is_borderless(phys_w, phys_h, desktop_w, desktop_h):
+        return (phys_l, phys_t, phys_w, phys_h, already, 'borderless')
+
+    dx, dy, dw, dh = _chrome_offsets(scale, already)
+    return ((left + dx) * mul, (top + dy) * mul,
+            (right - left - dw) * mul, (bottom - top - dh) * mul,
+            already, 'caption')
+
+
+def layout_16_10(w_left, w_top, w_width, w_hight):
+    return dict(
+        x_initial_A=303 / 2560 * w_width + w_left,
+        y_initial_A=424 / 1600 * w_hight + w_top,
+        x_offset_A=195 / 2560 * w_width,
+        y_offset_A=234 / 1600 * w_hight,
+        x_left_A=156 / 2560 * w_width + w_left,
+        x_right_A=321 / 2560 * w_width + w_left,
+        y_top_A=238 / 1600 * w_hight + w_top,
+        y_bottom_A=442 / 1600 * w_hight + w_top,
+        x_grab_A=1776 / 2560 * w_width + w_left,
+        y_grab_A=169 / 1600 * w_hight + w_top,
+        w_grab_A=602 / 2560 * w_width,
+        h_grab_A=725 / 1600 * w_hight,
+        row_A=5, col_A=8,
+        x_initial_B=200 / 2560 * w_width + w_left,
+        y_initial_B=355 / 1600 * w_hight + w_top,
+        x_offset_B=189 / 2560 * w_width,
+        y_offset_B=225 / 1600 * w_hight,
+        x_left_B=48 / 2560 * w_width + w_left,
+        x_right_B=216 / 2560 * w_width + w_left,
+        y_top_B=167 / 1600 * w_hight + w_top,
+        y_bottom_B=371 / 1600 * w_hight + w_top,
+        x_grab_B=1947 / 2560 * w_width + w_left,
+        y_grab_B=149 / 1600 * w_hight + w_top,
+        w_grab_B=551 / 2560 * w_width,
+        h_grab_B=504 / 1600 * w_hight,
+        row_B=6, col_B=4,
+        slot_click_B=[
+            (112 / 2560 * w_width + w_left, 58 / 1600 * w_hight + w_top),
+            (265 / 2560 * w_width + w_left, 58 / 1600 * w_hight + w_top),
+            (413 / 2560 * w_width + w_left, 58 / 1600 * w_hight + w_top),
+            (556 / 2560 * w_width + w_left, 58 / 1600 * w_hight + w_top),
+            (706 / 2560 * w_width + w_left, 58 / 1600 * w_hight + w_top),
+        ],
+        slot_overlay_B=[
+            (138 / 2560 * w_width + w_left, 82 / 1600 * w_hight + w_top),
+            (291 / 2560 * w_width + w_left, 82 / 1600 * w_hight + w_top),
+            (439 / 2560 * w_width + w_left, 82 / 1600 * w_hight + w_top),
+            (582 / 2560 * w_width + w_left, 82 / 1600 * w_hight + w_top),
+            (732 / 2560 * w_width + w_left, 82 / 1600 * w_hight + w_top),
+        ],
+        total_overlay_B=(200 / 2560 * w_width + w_left, 110 / 1600 * w_hight + w_top),
+    )
+
+
+def layout_16_9(w_left, w_top, w_width, w_hight):
+    return dict(
+        x_initial_A=226 / 1920 * w_width + w_left,
+        y_initial_A=317 / 1080 * w_hight + w_top,
+        x_offset_A=146 / 1920 * w_width,
+        y_offset_A=175 / 1080 * w_hight,
+        x_left_A=117 / 1920 * w_width + w_left,
+        x_right_A=242 / 1920 * w_width + w_left,
+        y_top_A=179 / 1080 * w_hight + w_top,
+        y_bottom_A=333 / 1080 * w_hight + w_top,
+        x_grab_A=1331 / 1920 * w_width + w_left,
+        y_grab_A=120 / 1080 * w_hight + w_top,
+        w_grab_A=450 / 1920 * w_width,
+        h_grab_A=550 / 1080 * w_hight,
+        row_A=5, col_A=8,
+        x_initial_B=147 / 1920 * w_width + w_left,
+        y_initial_B=261 / 1080 * w_hight + w_top,
+        x_offset_B=142 / 1920 * w_width,
+        y_offset_B=168 / 1080 * w_hight,
+        x_left_B=37 / 1920 * w_width + w_left,
+        x_right_B=164 / 1920 * w_width + w_left,
+        y_top_B=125 / 1080 * w_hight + w_top,
+        y_bottom_B=278 / 1080 * w_hight + w_top,
+        x_grab_B=1461 / 1920 * w_width + w_left,
+        y_grab_B=111 / 1080 * w_hight + w_top,
+        w_grab_B=413 / 1920 * w_width,
+        h_grab_B=378 / 1080 * w_hight,
+        row_B=5, col_B=4,
+        slot_click_B=[
+            (84 / 1920 * w_width + w_left, 44 / 1080 * w_hight + w_top),
+            (199 / 1920 * w_width + w_left, 44 / 1080 * w_hight + w_top),
+            (310 / 1920 * w_width + w_left, 44 / 1080 * w_hight + w_top),
+            (417 / 1920 * w_width + w_left, 44 / 1080 * w_hight + w_top),
+            (530 / 1920 * w_width + w_left, 44 / 1080 * w_hight + w_top),
+        ],
+        slot_overlay_B=[
+            (104 / 1920 * w_width + w_left, 62 / 1080 * w_hight + w_top),
+            (218 / 1920 * w_width + w_left, 62 / 1080 * w_hight + w_top),
+            (329 / 1920 * w_width + w_left, 62 / 1080 * w_hight + w_top),
+            (437 / 1920 * w_width + w_left, 62 / 1080 * w_hight + w_top),
+            (549 / 1920 * w_width + w_left, 62 / 1080 * w_hight + w_top),
+        ],
+        total_overlay_B=(150 / 1920 * w_width + w_left, 82 / 1080 * w_hight + w_top),
+    )
+
+
+def build_positions(layout):
+    position_A = []
+    for i in range(layout['row_A']):
+        for j in range(layout['col_A']):
+            position_A.append((
+                layout['x_initial_A'] + j * layout['x_offset_A'],
+                layout['y_initial_A'] + i * layout['y_offset_A'],
+            ))
+    position_B = []
+    for i in range(layout['row_B']):
+        for j in range(layout['col_B']):
+            position_B.append((
+                layout['x_initial_B'] + j * layout['x_offset_B'],
+                layout['y_initial_B'] + i * layout['y_offset_B'],
+            ))
+    xarray_A = [(layout['x_left_A'] + i * layout['x_offset_A'],
+                 layout['x_right_A'] + i * layout['x_offset_A'])
+                for i in range(layout['col_A'])]
+    yarray_A = [(layout['y_top_A'] + i * layout['y_offset_A'],
+                 layout['y_bottom_A'] + i * layout['y_offset_A'])
+                for i in range(layout['row_A'])]
+    xarray_B = [(layout['x_left_B'] + i * layout['x_offset_B'],
+                 layout['x_right_B'] + i * layout['x_offset_B'])
+                for i in range(layout['col_B'])]
+    yarray_B = [(layout['y_top_B'] + i * layout['y_offset_B'],
+                 layout['y_bottom_B'] + i * layout['y_offset_B'])
+                for i in range(layout['row_B'])]
+    return position_A, position_B, xarray_A, yarray_A, xarray_B, yarray_B
+
+
+def resolve_layout(w_left, w_top, w_width, w_hight, ratio=None):
+    if w_hight == 0:
+        ratio = 1.0
+    elif ratio is None:
+        ratio = w_width / w_hight
+    kind, warn, hard_fail = classify_aspect(ratio, w_width, w_hight)
+    if kind == '16:10':
+        layout = layout_16_10(w_left, w_top, w_width, w_hight)
+    else:
+        layout = layout_16_9(w_left, w_top, w_width, w_hight)
+    return kind, warn, hard_fail, layout, ratio
+
+
+try:
+    import win32con, win32api, win32gui, win32print
+    _HAS_WIN32 = True
+except ImportError:
+    _HAS_WIN32 = False
+
+
+def _client_rect_screen(hwnd):
+    cl, ct, cr, cb = win32gui.GetClientRect(hwnd)
+    sx, sy = win32gui.ClientToScreen(hwnd, (0, 0))
+    return (sx, sy, sx + (cr - cl), sy + (cb - ct))
+
+
+def _find_game_window():
     window_sc = win32gui.FindWindow('UnityWndClass', '原神')
     window_start = win32gui.FindWindow('START Cloud Game', 'START云游戏-Game')
-    time.sleep(5)
-    window = window_sc or window_start
-left, top, right, bottom = win32gui.GetWindowRect(window)
-# left, top, right, bottom = (0, 0, 2560, 1600) # 游戏窗口不打开时后门，测试用
-print(f'修正前窗口left,top,right,bottom{left, top, right, bottom}')
+    return window_sc or window_start
 
-# 缩放、标题栏修正
-w_width = (right - left) * SCALE
-if w_width > width_r - 10 and w_width < width_r + 10: # 兼容全屏无边框模式
-    w_left = left * SCALE
-    w_top = top * SCALE
-    w_width = (right - left) * SCALE
-    w_hight = (bottom - top) * SCALE
-else:
-    w_top = (top + 31) * SCALE
-    w_left = (left + 7) * SCALE
-    w_width = (right - left - 14) * SCALE
-    w_hight = (bottom - top - 38) * SCALE
-print(f'窗口x,y,w,h{w_left, w_top, w_width, w_hight}')
-if w_hight != 0:
-    ratio = w_width / w_hight
-else:
-    ratio = 1
 
-# 分辨率适配，A代表背包面板，B代表角色面板
-# 16:10窗口模式
-if ratio > 1.55 and ratio < 1.65:
-    x_initial_A, y_initial_A, x_offset_A, y_offset_A = (303 / 2560 * w_width + w_left, 424 / 1600 * w_hight + w_top, 195 / 2560 * w_width, 234 / 1600 * w_hight) # 第一个贴图坐标，y需要根据SCALE的标题栏高度做偏移
-    x_left_A, x_right_A, y_top_A, y_bottom_A = (156 / 2560 * w_width + w_left, 321 / 2560 * w_width + w_left, 238 / 1600 * w_hight + w_top, 442 / 1600 * w_hight + w_top) # 第一个圣遗物坐标
-    x_grab_A, y_grab_A, w_grab_A, h_grab_A = (1776 / 2560 * w_width + w_left, 169 / 1600 * w_hight + w_top, 602 / 2560 * w_width, 725 / 1600 * w_hight) # 截图x, y, w, h，y需要根据SCALE的标题栏高度做适配
-    row_A, col_A = (5, 8) #圣遗物行列数
+def _bootstrap():
+    global SCALE, width_r, height_r, window
+    global w_left, w_top, w_width, w_hight, ratio, aspect_kind
+    global x_initial_A, y_initial_A, x_offset_A, y_offset_A
+    global x_left_A, x_right_A, y_top_A, y_bottom_A
+    global x_grab_A, y_grab_A, w_grab_A, h_grab_A, row_A, col_A
+    global x_initial_B, y_initial_B, x_offset_B, y_offset_B
+    global x_left_B, x_right_B, y_top_B, y_bottom_B
+    global x_grab_B, y_grab_B, w_grab_B, h_grab_B, row_B, col_B
+    global slot_click_B, slot_overlay_B, total_overlay_B
+    global position_A, position_B, xarray_A, yarray_A, xarray_B, yarray_B
 
-    x_initial_B, y_initial_B, x_offset_B, y_offset_B = (200 / 2560 * w_width + w_left, 355 / 1600 * w_hight + w_top, 189 / 2560 * w_width, 225 / 1600 * w_hight)
-    x_left_B, x_right_B, y_top_B, y_bottom_B = (48 / 2560 * w_width + w_left, 216 / 2560 * w_width + w_left, 167 / 1600 * w_hight + w_top, 371 / 1600 * w_hight + w_top)
-    x_grab_B, y_grab_B, w_grab_B, h_grab_B = (1947 / 2560 * w_width + w_left, 149 / 1600 * w_hight + w_top, 551 / 2560 * w_width, 504 / 1600 * w_hight)
-    row_B, col_B = (6, 4)
-    # 角色装配页顶部 花/羽/沙/杯/冠 页签：点击中心、贴图右下角、合计贴图
-    slot_click_B = [
-        (112 / 2560 * w_width + w_left, 58 / 1600 * w_hight + w_top),
-        (265 / 2560 * w_width + w_left, 58 / 1600 * w_hight + w_top),
-        (413 / 2560 * w_width + w_left, 58 / 1600 * w_hight + w_top),
-        (556 / 2560 * w_width + w_left, 58 / 1600 * w_hight + w_top),
-        (706 / 2560 * w_width + w_left, 58 / 1600 * w_hight + w_top),
-    ]
-    slot_overlay_B = [
-        (138 / 2560 * w_width + w_left, 82 / 1600 * w_hight + w_top),
-        (291 / 2560 * w_width + w_left, 82 / 1600 * w_hight + w_top),
-        (439 / 2560 * w_width + w_left, 82 / 1600 * w_hight + w_top),
-        (582 / 2560 * w_width + w_left, 82 / 1600 * w_hight + w_top),
-        (732 / 2560 * w_width + w_left, 82 / 1600 * w_hight + w_top),
-    ]
-    total_overlay_B = (200 / 2560 * w_width + w_left, 110 / 1600 * w_hight + w_top)
+    dpi_mode = set_process_dpi_awareness()
+    hDC = win32gui.GetDC(0)
+    width_r = win32print.GetDeviceCaps(hDC, win32con.DESKTOPHORZRES)
+    height_r = win32print.GetDeviceCaps(hDC, win32con.DESKTOPVERTRES)
+    logpixelsx = win32print.GetDeviceCaps(hDC, win32con.LOGPIXELSX)
+    win32gui.ReleaseDC(0, hDC)
+    width_s = win32api.GetSystemMetrics(0)
+    height_s = win32api.GetSystemMetrics(1)
+    dpi_aware = dpi_mode not in ('unaware', 'skipped-non-windows')
 
-# 16:9窗口模式
-elif ratio > 1.7 and ratio < 1.8:
-    x_initial_A, y_initial_A, x_offset_A, y_offset_A = (226 / 1920 * w_width + w_left, 317 / 1080 * w_hight + w_top, 146 / 1920 * w_width, 175 / 1080 * w_hight)
-    x_left_A, x_right_A, y_top_A, y_bottom_A = (117 / 1920 * w_width + w_left, 242 / 1920 * w_width + w_left, 179 / 1080 * w_hight + w_top, 333 / 1080 * w_hight + w_top)
-    x_grab_A, y_grab_A, w_grab_A, h_grab_A = (1331 / 1920 * w_width + w_left, 120 / 1080 * w_hight + w_top, 450 / 1920 * w_width, 550 / 1080 * w_hight)
-    row_A, col_A = (5, 8)
+    window = _find_game_window()
+    while not window:
+        print('未找到游戏窗口，请启动游戏！')
+        time.sleep(5)
+        window = _find_game_window()
 
-    x_initial_B, y_initial_B, x_offset_B, y_offset_B = (147 / 1920 * w_width + w_left, 261 / 1080 * w_hight + w_top, 142 / 1920 * w_width, 168 / 1080 * w_hight)
-    x_left_B, x_right_B, y_top_B, y_bottom_B = (37 / 1920 * w_width + w_left, 164 / 1920 * w_width + w_left, 125 / 1080 * w_hight + w_top, 278 / 1080 * w_hight + w_top)
-    x_grab_B, y_grab_B, w_grab_B, h_grab_B = (1461 / 1920 * w_width + w_left, 111 / 1080 * w_hight + w_top, 413 / 1920 * w_width, 378 / 1080 * w_hight)
-    row_B, col_B = (5, 4)
-    # 与 16:10 相同页签，按现有格子坐标的宽度比 1920/2560 缩放
-    slot_click_B = [
-        (84 / 1920 * w_width + w_left, 44 / 1080 * w_hight + w_top),
-        (199 / 1920 * w_width + w_left, 44 / 1080 * w_hight + w_top),
-        (310 / 1920 * w_width + w_left, 44 / 1080 * w_hight + w_top),
-        (417 / 1920 * w_width + w_left, 44 / 1080 * w_hight + w_top),
-        (530 / 1920 * w_width + w_left, 44 / 1080 * w_hight + w_top),
-    ]
-    slot_overlay_B = [
-        (104 / 1920 * w_width + w_left, 62 / 1080 * w_hight + w_top),
-        (218 / 1920 * w_width + w_left, 62 / 1080 * w_hight + w_top),
-        (329 / 1920 * w_width + w_left, 62 / 1080 * w_hight + w_top),
-        (437 / 1920 * w_width + w_left, 62 / 1080 * w_hight + w_top),
-        (549 / 1920 * w_width + w_left, 62 / 1080 * w_hight + w_top),
-    ]
-    total_overlay_B = (150 / 1920 * w_width + w_left, 82 / 1080 * w_hight + w_top)
+    dpi = read_dpi(window, logpixelsx)
+    SCALE = compute_scale(width_r, width_s, dpi)
+    print(f'物理桌面{width_r, height_r}  GetSystemMetrics{width_s, height_s}  '
+          f'DPI={dpi}  SCALE={SCALE:.4f}  感知={dpi_mode}')
 
-# 3:2窗口模式
-# elif ratio > 1.45 and ratio < 1.55:
-#     x_initial_A, y_initial_A, x_offset_A, y_offset_A = (254 / 2160 * w_width + w_left, (318 - 36) / 1440 * w_hight + SCALE * 24 + w_top, 165 / 2160 * w_width, 197 / 1440 * w_hight)
-#     x_left_A, x_right_A, y_top_A, y_bottom_A = (136 / 2160 * w_width + w_left, 276 / 2160 * w_width + w_left, (173 - 36) / 1440 * w_hight + SCALE * 24 + w_top, (344 - 36) / 1440 * w_hight + SCALE * 24 + w_top)
-#     x_grab_A, y_grab_A, w_grab_A, h_grab_A = (1500 / 1920 * w_width + w_left, (175 - 36) / 1080 * w_hight + SCALE * 24 + w_top, (508 - 50) / 1920 * w_width, 571 / 1080 * w_hight)
-#     row_A, col_A = (6, 8)
+    left, top, right, bottom = win32gui.GetWindowRect(window)
+    # left, top, right, bottom = (0, 0, 3840, 2160)  # 游戏窗口不打开时后门，测试用
+    print(f'原始 GetWindowRect{left, top, right, bottom}')
+    client_rect = None
+    try:
+        client_rect = _client_rect_screen(window)
+        print(f'GetClientRect(screen){client_rect}')
+    except Exception as exc:
+        print(f'GetClientRect 失败: {exc}')
 
-#     x_initial_B, y_initial_B, x_offset_B, y_offset_B = (160 / 2160 * w_width + w_left, (326 - 36) / 1440 *w_hight + SCALE * 24 + w_top, 160 / 2160 * w_width, 189 / 1440 * w_hight)
-#     x_left_B, x_right_B, y_top_B, y_bottom_B = (43 / 2160 * w_width + w_left, 186 / 2160 * w_width + w_left, (178 - 36) / 1440 * w_hight + SCALE * 24 + w_top, (350 - 36) / 1440 * w_hight + SCALE * 24 + w_top)
-#     x_grab_B, y_grab_B, w_grab_B, h_grab_B = (1649 / 1920 * w_width + w_left, (165 - 36) / 1080 * w_hight + SCALE * 24 + w_top, 461 / 1920 * w_width, 421 / 1080 * w_hight)
-#     row_B, col_B = (6, 4)
+    w_left, w_top, w_width, w_hight, already, src = correct_window_rect(
+        left, top, right, bottom, SCALE, width_r, height_r,
+        client_rect=client_rect, dpi_aware=dpi_aware)
+    print(f'修正后窗口 x,y,w,h{w_left, w_top, w_width, w_hight}  '
+          f'already_physical={already}  source={src}')
 
-else:
-    print('请将游戏显示模式调至1920*1080窗口，然后重启软件')
-    x_initial_A, y_initial_A, x_offset_A, y_offset_A = (226 / 1920 * w_width + w_left, 317 / 1080 * w_hight + w_top, 146 / 1920 * w_width, 175 / 1080 * w_hight)
-    x_left_A, x_right_A, y_top_A, y_bottom_A = (117 / 1920 * w_width + w_left, 242 / 1920 * w_width + w_left, 179 / 1080 * w_hight + w_top, 333 / 1080 * w_hight + w_top)
-    x_grab_A, y_grab_A, w_grab_A, h_grab_A = (1331 / 1920 * w_width + w_left, 125 / 1080 * w_hight + w_top, 450 / 1920 * w_width, 506 / 1080 * w_hight)
-    row_A, col_A = (5, 8)
+    kind, warn, hard_fail, layout, ratio = resolve_layout(
+        w_left, w_top, w_width, w_hight)
+    aspect_kind = kind
+    print(f'宽高比 ratio={ratio:.4f} → {kind}')
+    if warn:
+        print(warn)
+    if hard_fail:
+        print('请使用 16:9 或 16:10（窗口 / 无边框，含 4K），然后重启软件')
 
-    x_initial_B, y_initial_B, x_offset_B, y_offset_B = (147 / 1920 * w_width + w_left, 261 / 1080 * w_hight + w_top, 142 / 1920 * w_width, 168 / 1080 * w_hight)
-    x_left_B, x_right_B, y_top_B, y_bottom_B = (37 / 1920 * w_width + w_left, 164 / 1920 * w_width + w_left, 125 / 1080 * w_hight + w_top, 278 / 1080 * w_hight + w_top)
-    x_grab_B, y_grab_B, w_grab_B, h_grab_B = (1461 / 1920 * w_width + w_left, 111 / 1080 * w_hight + w_top, 413 / 1920 * w_width, 378 / 1080 * w_hight)
-    row_B, col_B = (5, 4)
-    slot_click_B = [
-        (84 / 1920 * w_width + w_left, 44 / 1080 * w_hight + w_top),
-        (199 / 1920 * w_width + w_left, 44 / 1080 * w_hight + w_top),
-        (310 / 1920 * w_width + w_left, 44 / 1080 * w_hight + w_top),
-        (417 / 1920 * w_width + w_left, 44 / 1080 * w_hight + w_top),
-        (530 / 1920 * w_width + w_left, 44 / 1080 * w_hight + w_top),
-    ]
-    slot_overlay_B = [
-        (104 / 1920 * w_width + w_left, 62 / 1080 * w_hight + w_top),
-        (218 / 1920 * w_width + w_left, 62 / 1080 * w_hight + w_top),
-        (329 / 1920 * w_width + w_left, 62 / 1080 * w_hight + w_top),
-        (437 / 1920 * w_width + w_left, 62 / 1080 * w_hight + w_top),
-        (549 / 1920 * w_width + w_left, 62 / 1080 * w_hight + w_top),
-    ]
-    total_overlay_B = (150 / 1920 * w_width + w_left, 82 / 1080 * w_hight + w_top)
+    for key, value in layout.items():
+        globals()[key] = value
+    position_A, position_B, xarray_A, yarray_A, xarray_B, yarray_B = build_positions(layout)
 
-# 贴图坐标组
-position_A = []
-for i in range(row_A):
-    for j in range(col_A):
-        position = x_initial_A + j * x_offset_A, y_initial_A + i * y_offset_A
-        position_A.append(position)
 
-position_B = []
-for i in range(row_B):
-    for j in range(col_B):
-        position = x_initial_B + j * x_offset_B, y_initial_B + i * y_offset_B
-        position_B.append(position)
-
-# 鼠标事件有效坐标区间
-xarray_A = []
-for i in range(col_A):
-    position = x_left_A + i * x_offset_A, x_right_A + i * x_offset_A
-    xarray_A.append(position)
-yarray_A = []
-for i in range(row_A):
-    position = y_top_A + i * y_offset_A, y_bottom_A + i * y_offset_A
-    yarray_A.append(position)
-
-xarray_B = []
-for i in range(col_B):
-    position = x_left_B + i * x_offset_B, x_right_B + i * x_offset_B
-    xarray_B.append(position)
-yarray_B = []
-for i in range(row_B):
-    position = y_top_B + i * y_offset_B, y_bottom_B + i * y_offset_B
-    yarray_B.append(position)
+if _HAS_WIN32:
+    _bootstrap()
